@@ -9,6 +9,7 @@ struct TransportPeerSnapshot: Equatable, Hashable {
     let isConnected: Bool
     let noisePublicKey: Data?
     let lastSeen: Date
+    let agentInfo: AgentInfo?
 }
 
 protocol Transport: AnyObject {
@@ -54,6 +55,8 @@ protocol Transport: AnyObject {
     func sendFileBroadcast(_ packet: BitchatFilePacket, transferId: String)
     func sendFilePrivate(_ packet: BitchatFilePacket, to peerID: PeerID, transferId: String)
     func cancelTransfer(_ transferId: String)
+    func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID)
+    func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID)
 
     // QR verification (optional for transports)
     func sendVerifyChallenge(to peerID: PeerID, noiseKeyHex: String, nonceA: Data)
@@ -70,6 +73,8 @@ extension Transport {
     func sendFileBroadcast(_ packet: BitchatFilePacket, transferId: String) {}
     func sendFilePrivate(_ packet: BitchatFilePacket, to peerID: PeerID, transferId: String) {}
     func cancelTransfer(_ transferId: String) {}
+    func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID) {}
+    func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID) {}
 
     func sendMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date) {
         sendMessage(content, mentions: mentions)

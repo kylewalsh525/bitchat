@@ -89,6 +89,13 @@ struct MeshPeerList: View {
                             }
                         }
 
+                        if !isMe, peer.agentInfo != nil {
+                            Image(systemName: "cpu")
+                                .font(.bitchatSystem(size: 10))
+                                .foregroundColor(baseColor)
+                                .help("agent")
+                        }
+
                         if !isMe, viewModel.isPeerBlocked(peer.peerID) {
                             Image(systemName: "nosign")
                                 .font(.bitchatSystem(size: 10))

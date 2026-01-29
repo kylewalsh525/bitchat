@@ -16,6 +16,9 @@ import AppKit
 
 final class NotificationService {
     static let shared = NotificationService()
+    static var appReadyForNotifications: Bool = false
+    
+    private var notificationsEnabledThisSession: Bool = true
 
     /// Returns true if running in test environment (XCTest, Swift Testing, or CI)
     private var isRunningTests: Bool {
@@ -29,8 +32,19 @@ final class NotificationService {
 
     private init() {}
 
+    private func canUseNotifications() -> Bool {
+        guard notificationsEnabledThisSession else { return false }
+        #if os(macOS)
+        guard NotificationService.appReadyForNotifications else { return false }
+        #endif
+        return true
+    }
+
     func requestAuthorization() {
-        guard !isRunningTests else { return }
+        #if os(macOS)
+        return
+        #endif
+        guard !isRunningTests, canUseNotifications() else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if granted {
                 // Permission granted
@@ -47,7 +61,10 @@ final class NotificationService {
         userInfo: [String: Any]? = nil,
         interruptionLevel: UNNotificationInterruptionLevel = .active
     ) {
-        guard !isRunningTests else { return }
+        #if os(macOS)
+        return
+        #endif
+        guard !isRunningTests, canUseNotifications() else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

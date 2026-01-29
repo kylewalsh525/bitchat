@@ -31,6 +31,7 @@ protocol CommandContextProvider: AnyObject {
     var blockedUsers: Set<String> { get }
     var privateChats: [PeerID: [BitchatMessage]] { get set }
     var idBridge: NostrIdentityBridge { get }
+    var agentConfig: AgentConfig { get }
 
     // MARK: - Peer Lookup
     func getPeerIDForNickname(_ nickname: String) -> PeerID?
@@ -42,6 +43,8 @@ protocol CommandContextProvider: AnyObject {
     func sendPrivateMessage(_ content: String, to peerID: PeerID)
     func clearCurrentPublicTimeline()
     func sendPublicRaw(_ content: String)
+    func dispatchAgentRequest(role: String, prompt: String) -> CommandResult
+    func updateAgentConfig(_ config: AgentConfig)
 
     // MARK: - System Messages
     func addLocalPrivateSystemMessage(_ content: String, to peerID: PeerID)
@@ -88,6 +91,18 @@ final class CommandProcessor {
             return handleWho()
         case "/clear":
             return handleClear()
+        case "/agent":
+            return handleAgent(args)
+        case "/agentconfig":
+            return handleAgentConfig(args)
+        case "/agentset":
+            return handleAgentSet(args)
+        case "/agenton":
+            return handleAgentToggle(enabled: true)
+        case "/agentoff":
+            return handleAgentToggle(enabled: false)
+        case "/agentquality":
+            return handleAgentQuality(args)
         case "/hug":
             return handleEmote(args, command: "hug", action: "hugs", emoji: "🫂")
         case "/slap":
@@ -163,6 +178,70 @@ final class CommandProcessor {
             contextProvider?.clearCurrentPublicTimeline()
         }
         return .handled
+    }
+
+    private func handleAgent(_ args: String) -> CommandResult {
+        let parts = args.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count >= 2 else {
+            return .error(message: "usage: /agent <role> <prompt>")
+        }
+        let role = String(parts[0])
+        let prompt = String(parts[1])
+        return contextProvider?.dispatchAgentRequest(role: role, prompt: prompt) ?? .error(message: "agent dispatch unavailable")
+    }
+
+    private func handleAgentConfig(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty || trimmed == "show" else {
+            return .error(message: "usage: /agentconfig")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        let config = ctx.agentConfig
+        let status = config.enabled ? "on" : "off"
+        let hash = config.modelHash?.isEmpty == false ? " hash=\(config.modelHash!)" : ""
+        let message = "agent \(status): role=\(config.role) model=\(config.modelId) quality=\(config.qualityScore)\(hash)"
+        return .success(message: message)
+    }
+
+    private func handleAgentSet(_ args: String) -> CommandResult {
+        let parts = args.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count >= 2 else {
+            return .error(message: "usage: /agentset <role> <model> [quality] [hash]")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.role = String(parts[0])
+        next.modelId = String(parts[1])
+        if parts.count >= 3, let q = UInt8(parts[2]), q <= 100 {
+            next.qualityScore = q
+        } else if parts.count >= 3 {
+            return .error(message: "quality must be 0-100")
+        }
+        if parts.count >= 4 {
+            next.modelHash = String(parts[3])
+        }
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent config updated")
+    }
+
+    private func handleAgentToggle(enabled: Bool) -> CommandResult {
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.enabled = enabled
+        ctx.updateAgentConfig(next)
+        return .success(message: enabled ? "agent enabled" : "agent disabled")
+    }
+
+    private func handleAgentQuality(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let q = UInt8(trimmed), q <= 100 else {
+            return .error(message: "usage: /agentquality <0-100>")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.qualityScore = q
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent quality set to \(q)")
     }
     
     private func handleEmote(_ args: String, command: String, action: String, emoji: String, suffix: String = "") -> CommandResult {

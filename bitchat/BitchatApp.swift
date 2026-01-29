@@ -38,8 +38,7 @@ struct BitchatApp: App {
                 identityManager: SecureIdentityStateManager(keychain)
             )
         )
-        
-        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+
         // Warm up georelay directory and refresh if stale (once/day)
         GeoRelayDirectory.shared.prefetchIfNeeded()
     }
@@ -49,6 +48,11 @@ struct BitchatApp: App {
             ContentView()
                 .environmentObject(chatViewModel)
                 .onAppear {
+                    #if os(iOS)
+                    UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+                    NotificationService.appReadyForNotifications = true
+                    NotificationService.shared.requestAuthorization()
+                    #endif
                     NotificationDelegate.shared.chatViewModel = chatViewModel
                     // Inject live Noise service into VerificationService to avoid creating new BLE instances
                     VerificationService.shared.configure(with: chatViewModel.meshService.getNoiseService())
@@ -278,4 +282,3 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         completionHandler([.banner, .sound])
     }
 }
-

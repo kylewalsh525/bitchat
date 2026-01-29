@@ -270,6 +270,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     private let userDefaults = UserDefaults.standard
     let keychain: KeychainManagerProtocol
     private let nicknameKey = "bitchat.nickname"
+    private let agentConfigKey = "bitchat.agent.config"
     // Location channel state (macOS supports manual geohash selection)
     @Published var activeChannel: ChannelID = .mesh
     var geoSubscriptionID: String? = nil
@@ -290,6 +291,18 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     
     // Caches for expensive computations
     private var encryptionStatusCache: [PeerID: EncryptionStatus] = [:]
+
+    // MARK: - Agent Configuration
+    @Published private(set) var agentConfig: AgentConfig = .default
+    private let agentRuntime: AgentRuntime = EchoAgentRuntime()
+
+    private struct AgentRequestContext {
+        let role: String
+        let targetPeerID: PeerID
+        let targetNickname: String
+        let sentAt: Date
+    }
+    private var pendingAgentRequests: [String: AgentRequestContext] = [:]
     
     // MARK: - Social Features (Delegated to PeerStateManager)
     
@@ -463,6 +476,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         self.commandProcessor.meshService = meshService
         
         loadNickname()
+        loadAgentConfig()
         loadVerifiedFingerprints()
         meshService.delegate = self
         
@@ -477,6 +491,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         
         // Set nickname before starting services
         meshService.setNickname(nickname)
+        applyAgentConfig()
         
         // Start mesh service immediately
         meshService.startServices()
@@ -605,8 +620,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             }
             .store(in: &cancellables)
         
-        // Request notification permission (guards test environment internally)
-        NotificationService.shared.requestAuthorization()
+        // Notification permission is requested from app lifecycle after startup
         
         
         // Listen for favorite status changes
@@ -774,6 +788,36 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             nickname = trimmed
         }
         saveNickname()
+    }
+
+    // MARK: - Agent Configuration
+
+    private func loadAgentConfig() {
+        if let data = userDefaults.data(forKey: agentConfigKey),
+           let decoded = try? JSONDecoder().decode(AgentConfig.self, from: data) {
+            agentConfig = decoded
+        } else {
+            agentConfig = .default
+        }
+    }
+
+    private func saveAgentConfig() {
+        if let data = try? JSONEncoder().encode(agentConfig) {
+            userDefaults.set(data, forKey: agentConfigKey)
+        }
+    }
+
+    private func applyAgentConfig() {
+        if let bleService = meshService as? BLEService {
+            bleService.setAgentInfo(agentConfig.info)
+        }
+    }
+
+    @MainActor
+    func updateAgentConfig(_ next: AgentConfig) {
+        agentConfig = next
+        saveAgentConfig()
+        applyAgentConfig()
     }
     
     // MARK: - Favorites Management
@@ -3103,6 +3147,12 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                     privateChatManager.objectWillChange.send()
                     objectWillChange.send()
                 }
+            case .agentRequest:
+                guard let request = AgentRequestPacket.decode(from: payload) else { return }
+                handleAgentRequest(request, from: peerID)
+            case .agentResponse:
+                guard let response = AgentResponsePacket.decode(from: payload) else { return }
+                handleAgentResponse(response, from: peerID)
             case .verifyChallenge:
                 // Parse and respond
                 guard let tlv = VerificationService.shared.parseVerifyChallenge(payload) else { return }
@@ -3171,6 +3221,38 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                 }
             }
         }
+    }
+
+    @MainActor
+    private func handleAgentRequest(_ request: AgentRequestPacket, from peerID: PeerID) {
+        guard let localInfo = agentConfig.info else { return }
+        let requestedRole = request.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if localInfo.normalizedRole != requestedRole {
+            let response = AgentResponsePacket(
+                requestID: request.requestID,
+                content: "role mismatch (expected \(localInfo.role))",
+                isError: true
+            )
+            meshService.sendAgentResponse(response, to: peerID)
+            return
+        }
+
+        Task { [weak self, agentRuntime, localInfo] in
+            let response = await agentRuntime.run(request: request, from: peerID, localInfo: localInfo)
+            await MainActor.run {
+                self?.meshService.sendAgentResponse(response, to: peerID)
+            }
+        }
+    }
+
+    @MainActor
+    private func handleAgentResponse(_ response: AgentResponsePacket, from peerID: PeerID) {
+        let context = pendingAgentRequests.removeValue(forKey: response.requestID)
+        let agentName = unifiedPeerService.getPeer(by: peerID)?.nickname ?? "agent"
+        let role = context?.role ?? unifiedPeerService.getPeer(by: peerID)?.agentInfo?.role ?? "agent"
+        let statusPrefix = response.isError ? "agent error" : "agent"
+        let text = "[\(statusPrefix) \(role) @\(agentName)] \(response.content)"
+        addMeshOnlySystemMessage(text)
     }
 
     func didReceivePublicMessage(from peerID: PeerID, nickname: String, content: String, timestamp: Date, messageID: String?) {
@@ -3697,6 +3779,66 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                                 mentions: [],
                                 messageID: UUID().uuidString,
                                 timestamp: Date())
+    }
+
+    @MainActor
+    func dispatchAgentRequest(role: String, prompt: String) -> CommandResult {
+        let trimmedRole = role.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRole.isEmpty, !trimmedPrompt.isEmpty else {
+            return .error(message: "usage: /agent <role> <prompt>")
+        }
+
+        // Allow targeting a specific nickname with /agent @name ...
+        if trimmedRole.hasPrefix("@") {
+            let nickname = String(trimmedRole.dropFirst()).lowercased()
+            if let peer = allPeers.first(where: { $0.nickname.lowercased() == nickname }) {
+                let requestID = UUID().uuidString
+                let request = AgentRequestPacket(requestID: requestID, role: "direct", prompt: trimmedPrompt)
+                pendingAgentRequests[requestID] = AgentRequestContext(
+                    role: "direct",
+                    targetPeerID: peer.peerID,
+                    targetNickname: peer.nickname,
+                    sentAt: Date()
+                )
+                meshService.sendAgentRequest(request, to: peer.peerID)
+                return .success(message: "sent to @\(peer.nickname)")
+            }
+            return .error(message: "agent '@\(nickname)' not found")
+        }
+
+        let normalizedRole = trimmedRole.lowercased()
+        let allowAnyRole = normalizedRole == "any" || normalizedRole == "*"
+        let candidates = allPeers.filter { peer in
+            guard let info = peer.agentInfo else { return false }
+            return allowAnyRole || info.normalizedRole == normalizedRole
+        }
+        let reachable = candidates.filter { $0.isConnected || $0.isReachable }
+        guard let target = reachable.sorted(by: agentSort).first else {
+            return .error(message: "no reachable agents for role '\(trimmedRole)'")
+        }
+
+        let requestID = UUID().uuidString
+        let requestRole = allowAnyRole ? (target.agentInfo?.role ?? normalizedRole) : normalizedRole
+        let request = AgentRequestPacket(requestID: requestID, role: requestRole, prompt: trimmedPrompt)
+        pendingAgentRequests[requestID] = AgentRequestContext(
+            role: requestRole,
+            targetPeerID: target.peerID,
+            targetNickname: target.nickname,
+            sentAt: Date()
+        )
+        meshService.sendAgentRequest(request, to: target.peerID)
+        let modelLabel = target.agentInfo?.modelId ?? "agent"
+        return .success(message: "sent to \(target.nickname) (\(modelLabel))")
+    }
+
+    private func agentSort(_ lhs: BitchatPeer, _ rhs: BitchatPeer) -> Bool {
+        if lhs.isConnected != rhs.isConnected { return lhs.isConnected }
+        if lhs.isReachable != rhs.isReachable { return lhs.isReachable }
+        let lq = lhs.agentInfo?.qualityScore ?? 0
+        let rq = rhs.agentInfo?.qualityScore ?? 0
+        if lq != rq { return lq > rq }
+        return lhs.displayName < rhs.displayName
     }
     
 

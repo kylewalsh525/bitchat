@@ -14,6 +14,7 @@ final class AutocompleteService {
     private let commandRegex = try? NSRegularExpression(pattern: "^/([a-z]*)$", options: [])
     
     private let commands = [
+        "/agent", "/agentconfig", "/agentset", "/agenton", "/agentoff", "/agentquality",
         "/msg", "/who", "/clear",
         "/hug", "/slap", "/fav", "/unfav",
         "/block", "/unblock"

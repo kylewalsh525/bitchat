@@ -71,6 +71,7 @@ final class BLEService: NSObject {
         var signingPublicKey: Data?
         var isVerifiedNickname: Bool
         var lastSeen: Date
+        var agentInfo: AgentInfo?
     }
     private var peers: [PeerID: PeerInfo] = [:]
     private var currentPeerIDs: [PeerID] {
@@ -122,6 +123,7 @@ final class BLEService: NSObject {
     private let keychain: KeychainManagerProtocol
     private let idBridge: NostrIdentityBridge
     private var myPeerIDData: Data = Data()
+    private var localAgentInfo: AgentInfo? = nil
 
     // MARK: - Advertising Privacy
     // No Local Name by default for maximum privacy. No rotating alias.
@@ -487,7 +489,8 @@ final class BLEService: NSObject {
                     nickname: resolvedNames[info.peerID] ?? info.nickname,
                     isConnected: info.isConnected,
                     noisePublicKey: info.noisePublicKey,
-                    lastSeen: info.lastSeen
+                    lastSeen: info.lastSeen,
+                    agentInfo: info.agentInfo
                 )
             }
         }
@@ -501,6 +504,12 @@ final class BLEService: NSObject {
     func setNickname(_ nickname: String) {
         self.myNickname = nickname
         // Send announce to notify peers of nickname change (force send)
+        sendAnnounce(forceSend: true)
+    }
+
+    func setAgentInfo(_ info: AgentInfo?) {
+        self.localAgentInfo = info
+        // Re-announce so peers can learn updated capabilities
         sendAnnounce(forceSend: true)
     }
     
@@ -720,6 +729,26 @@ final class BLEService: NSObject {
     
     func sendPrivateMessage(_ content: String, to peerID: PeerID, recipientNickname: String, messageID: String) {
         sendPrivateMessage(content, to: peerID, messageID: messageID)
+    }
+
+    func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID) {
+        guard let tlv = request.encode() else {
+            SecureLogger.error("❌ Failed to encode agent request", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentRequest.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID) {
+        guard let tlv = response.encode() else {
+            SecureLogger.error("❌ Failed to encode agent response", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentResponse.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
     }
 
     func sendFileBroadcast(_ filePacket: BitchatFilePacket, transferId: String) {
@@ -1547,7 +1576,8 @@ final class BLEService: NSObject {
             nickname: myNickname,
             noisePublicKey: noisePub,
             signingPublicKey: signingPub,
-            directNeighbors: connectedPeerIDs
+            directNeighbors: connectedPeerIDs,
+            agentInfo: localAgentInfo
         )
         
         guard let payload = announcement.encode() else {
@@ -2059,7 +2089,8 @@ extension BLEService {
                     noisePublicKey: packet.senderID,
                     signingPublicKey: nil,
                     isVerifiedNickname: true,
-                    lastSeen: Date()
+                    lastSeen: Date(),
+                    agentInfo: nil
                 )
             } else {
                 var p = peers[normalizedID]!
@@ -2902,7 +2933,7 @@ extension BLEService {
             )
             broadcastPacket(packet)
         } catch {
-            SecureLogger.error("Failed to send verification payload: \(error)")
+            SecureLogger.error("Failed to send noise payload: \(error)")
         }
     }
     
@@ -3892,7 +3923,8 @@ extension BLEService {
                     noisePublicKey: announcement.noisePublicKey,
                     signingPublicKey: announcement.signingPublicKey,
                     isVerifiedNickname: true,
-                    lastSeen: Date()
+                    lastSeen: Date(),
+                    agentInfo: announcement.agentInfo
                 )
             } else {
                 // New peer or reconnecting peer
@@ -3903,7 +3935,8 @@ extension BLEService {
                     noisePublicKey: announcement.noisePublicKey,
                     signingPublicKey: announcement.signingPublicKey,
                     isVerifiedNickname: true,
-                    lastSeen: Date()
+                    lastSeen: Date(),
+                    agentInfo: announcement.agentInfo
                 )
             }
             
@@ -4179,6 +4212,16 @@ extension BLEService {
                 notifyUI { [weak self] in
                     self?.delegate?.didReceiveNoisePayload(from: peerID, type: .readReceipt, payload: Data(payloadData), timestamp: ts)
                 }
+            case .agentRequest:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentRequest, payload: Data(payloadData), timestamp: ts)
+                }
+            case .agentResponse:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentResponse, payload: Data(payloadData), timestamp: ts)
+                }
             case .verifyChallenge:
                 let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
                 notifyUI { [weak self] in
@@ -4277,7 +4320,8 @@ extension BLEService {
                     nickname: display,
                     isConnected: info.isConnected,
                     noisePublicKey: info.noisePublicKey,
-                    lastSeen: info.lastSeen
+                    lastSeen: info.lastSeen,
+                    agentInfo: info.agentInfo
                 )
             }
         }
