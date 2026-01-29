@@ -1,52 +1,55 @@
-# Agent Mesh Roadmap
+# Agent Mesh Roadmap (Index)
 
-This document captures forward-looking additions based on current design
-intent. None of the items below are implemented yet.
+This roadmap is split into per-phase documents so subagents can own discrete
+scopes without stepping on each other.
 
-## 1) Real LLM Runtime
-### Goals
-- Replace EchoAgentRuntime with real inference.
-- Support local on-device models and remote gateways.
+## Phase Index
+- Phase 0: Foundation and Test Harness
+  - `docs/AGENT_MESH_ROADMAP/PHASE_0_FOUNDATION.md`
+- Phase 1: Real Agent Runtime (Gateway or Local)
+  - `docs/AGENT_MESH_ROADMAP/PHASE_1_RUNTIME.md`
+- Phase 2: Request Lifecycle Reliability
+  - `docs/AGENT_MESH_ROADMAP/PHASE_2_RELIABILITY.md`
+- Phase 3: Streaming Responses
+  - `docs/AGENT_MESH_ROADMAP/PHASE_3_STREAMING.md`
+- Phase 4: Payments (Micropayments)
+  - `docs/AGENT_MESH_ROADMAP/PHASE_4_PAYMENTS.md`
+- Phase 5: Trust and Quality
+  - `docs/AGENT_MESH_ROADMAP/PHASE_5_TRUST.md`
+- Phase 6: Sessions and Stateful Agents
+  - `docs/AGENT_MESH_ROADMAP/PHASE_6_SESSIONS.md`
+- Phase 7: Advanced Routing (Fanout + Bids)
+  - `docs/AGENT_MESH_ROADMAP/PHASE_7_ADVANCED_ROUTING.md`
 
-### Suggested Steps
-- Implement a new AgentRuntime that calls a local gateway (e.g., Moltbot).
-- Add retry/timeout handling (request expiration, user feedback).
-- Support streaming by adding agentResponseChunk payload or chunk TLV.
+## Working Rules (for Parallel Subagents)
+- Each work package owns a small, explicit set of files. Avoid touching files
+  owned by other packages.
+- If shared files must change (for example, ChatViewModel), add a new extension
+  file instead of editing the base type whenever possible.
+- Prefer additive changes that preserve protocol backwards compatibility.
+- Every package must include tests or a reproducible manual checklist.
 
-## 2) Payments (Stablecoin)
-### Goals
-- Add micropayments per request or per token.
-- Keep the mesh protocol compact and privacy-preserving.
+## Work Package Template
+Each work package in the phase documents lists:
+- Goal
+- Owned files (exclusive edits)
+- Interfaces introduced or modified
+- Dependencies (if any)
+- Done when (acceptance criteria)
 
-### Protocol Options
-Option A: extend AgentInfo
-- paymentMethod, paymentAddress, pricePerRequest
+## Cross-Cutting Deliverables (Apply to All Phases)
+- Update `docs/AGENT_MESH_IMPLEMENTATION.md` with new code map entries.
+- Keep `docs/AGENT_MESH_PROTOCOL.md` in sync with TLV additions and payload types.
+- Add manual test scripts to `docs/AGENT_MESH_SETUP.md` per phase.
 
-Option B: extend AgentResponsePacket
-- paymentRequest (invoice/address + amount)
-- paymentMemo
+## Recommended Implementation Order
+1) Phase 0 (Foundation)
+2) Phase 1 (Real runtime)
+3) Phase 2 (Reliability)
+4) Phase 3 (Streaming)
+5) Phase 6 (Sessions) - unlocks longer workflows
+6) Phase 4 (Payments)
+7) Phase 5 (Trust)
+8) Phase 7 (Advanced routing)
 
-### Flow Sketch
-1) Caller sends /agent request.
-2) Agent returns payment request metadata.
-3) Caller pays via wallet.
-4) Caller submits proof (preimage/tx) or auto-verify.
-5) Agent returns final content or unlocks encrypted content.
-
-## 3) Quality and Trust
-### Goals
-- Make agent quality more reliable than self-declared score.
-
-### Ideas
-- Signed quality attestations from trusted issuers.
-- Proof-of-model hashes tied to attested benchmarks.
-- Reputation based on local history.
-
-## 4) Sessions and Stateful Agents
-- Support multi-turn sessions with explicit session IDs.
-- Store limited context with privacy rules.
-
-## 5) Transport and Routing
-- Add request fanout or bid/quote flow.
-- Introduce TTL and idempotency for agent requests.
-- Add a retry queue for agents that reconnect later.
+This order keeps the core mesh flow stable before layering payments and trust.
