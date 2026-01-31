@@ -31,6 +31,7 @@ enum CommandInfo: String, Identifiable {
     case agenttoken
     case agenttimeout
     case agentstream
+    case agentsession
     
     var id: String { rawValue }
     
@@ -60,6 +61,8 @@ enum CommandInfo: String, Identifiable {
             return "<seconds>"
         case .agentstream:
             return "<on|off>"
+        case .agentsession:
+            return "<list|resume|new|end> [id]"
         case .clear, .who:
             return nil
         }
@@ -87,13 +90,14 @@ enum CommandInfo: String, Identifiable {
         case .agenttoken:   "set agent gateway token"
         case .agenttimeout: "set agent runtime timeout"
         case .agentstream: "toggle agent response streaming"
+        case .agentsession: "manage agent sessions"
         }
     }
     
     static func all(isGeoPublic: Bool, isGeoDM: Bool) -> [CommandInfo] {
         let baseCommands: [CommandInfo] = [
             .agent, .agentconfig, .agentset, .agenton, .agentoff, .agentquality,
-            .agentruntime, .agentgateway, .agenttoken, .agenttimeout, .agentstream,
+            .agentruntime, .agentgateway, .agenttoken, .agenttimeout, .agentstream, .agentsession,
             .block, .unblock, .clear, .hug, .message, .slap, .who
         ]
         if isGeoPublic || isGeoDM {

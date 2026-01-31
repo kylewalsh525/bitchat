@@ -60,5 +60,7 @@ Status: Partial
   - Agent settings panel (enable, role, model, quality, runtime mode, stream toggle)
   - Agent catalog list (local runtime + gateway-supported model list)
   - “Capabilities” view that lists available roles and models with quality hints
+  - Manual-only gateway discovery (no background scans); user taps “Fetch Models”
+  - Gateway presets for local Ollama / LM Studio (via local gateway)
 - Dependencies: P1-RUNTIME-1, P1-GW-1
 - Done when: users can configure agent without commands and browse available models/roles.

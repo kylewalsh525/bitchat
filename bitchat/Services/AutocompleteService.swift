@@ -15,7 +15,7 @@ final class AutocompleteService {
     
     private let commands = [
         "/agent", "/agentconfig", "/agentset", "/agenton", "/agentoff", "/agentquality",
-        "/agentruntime", "/agentgateway", "/agenttoken", "/agenttimeout", "/agentstream",
+        "/agentruntime", "/agentgateway", "/agenttoken", "/agenttimeout", "/agentstream", "/agentsession",
         "/msg", "/who", "/clear",
         "/hug", "/slap", "/fav", "/unfav",
         "/block", "/unblock"

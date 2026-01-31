@@ -29,6 +29,13 @@ enum TransportConfig {
     static let agentRequestRetryIntervalSeconds: TimeInterval = 6.0
     static let agentRequestIdempotencySeconds: TimeInterval = 600
     static let agentResponseCacheMaxBytes: Int = 1_000_000
+    static let agentSessionStoreTTLSeconds: TimeInterval = 30 * 24 * 60 * 60
+    static let agentSessionStoreMaxCount: Int = 120
+    static let agentSessionStoreMaxHistoryTurns: Int = 40
+    static let agentSessionStoreMaxHistoryBytes: Int = 16_000
+    static let agentResumeHistoryTurns: Int = 12
+    static let agentResumeHistoryMaxBytes: Int = 6_000
+    static let agentResumeTurnMaxBytes: Int = 1_200
 
     // BLE duty/announce/connect
     static let bleConnectRateLimitInterval: TimeInterval = 0.5

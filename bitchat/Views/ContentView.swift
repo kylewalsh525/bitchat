@@ -27,6 +27,11 @@ private struct MessageDisplayItem: Identifiable {
     let message: BitchatMessage
 }
 
+private enum SidebarTab: String {
+    case people
+    case sessions
+}
+
 // MARK: - Main Content View
 
 struct ContentView: View {
@@ -41,6 +46,8 @@ struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showSidebar = false
+    @State private var showAgentSettings = false
+    @State private var sidebarTab: SidebarTab = .people
     @State private var showAppInfo = false
     @State private var showMessageActions = false
     @State private var selectedMessageSender: String?
@@ -97,10 +104,16 @@ struct ContentView: View {
     }
 
     private var peopleSheetTitle: String {
-        String(localized: "content.header.people", comment: "Title for the people list sheet").lowercased()
+        switch sidebarTab {
+        case .people:
+            return String(localized: "content.header.people", comment: "Title for the people list sheet").lowercased()
+        case .sessions:
+            return "sessions"
+        }
     }
 
     private var peopleSheetSubtitle: String? {
+        guard sidebarTab == .people else { return nil }
         switch locationManager.selectedChannel {
         case .mesh:
             return "#mesh"
@@ -110,12 +123,25 @@ struct ContentView: View {
     }
 
     private var peopleSheetActiveCount: Int {
+        if sidebarTab == .sessions {
+            return viewModel.agentSessionHistory.count
+        }
         switch locationManager.selectedChannel {
         case .mesh:
             return viewModel.allPeers.filter { $0.peerID != viewModel.meshService.myPeerID }.count
         case .location:
             return viewModel.visibleGeohashPeople().count
         }
+    }
+
+    private var sidebarCountText: String {
+        if sidebarTab == .sessions {
+            return "\(peopleSheetActiveCount) sessions"
+        }
+        return String.localizedStringWithFormat(
+            String(localized: "%@ active", comment: "Count of active users in the people sheet"),
+            "\(peopleSheetActiveCount)"
+        )
     }
     
     
@@ -186,10 +212,17 @@ struct ContentView: View {
             peopleSheetView
         }
         .sheet(isPresented: $showAppInfo) {
-            AppInfoView()
+            AppInfoView(onOpenAgentSettings: {
+                showAppInfo = false
+                showAgentSettings = true
+            })
                 .environmentObject(viewModel)
                 .onAppear { viewModel.isAppInfoPresented = true }
                 .onDisappear { viewModel.isAppInfoPresented = false }
+        }
+        .sheet(isPresented: $showAgentSettings) {
+            AgentSettingsView()
+                .environmentObject(viewModel)
         }
         .sheet(isPresented: Binding(
             get: { viewModel.showingFingerprintFor != nil },
@@ -900,7 +933,7 @@ struct ContentView: View {
                         .font(.bitchatSystem(size: 18, design: .monospaced))
                         .foregroundColor(textColor)
                     Spacer()
-                    if case .mesh = locationManager.selectedChannel {
+                    if sidebarTab == .people, case .mesh = locationManager.selectedChannel {
                         Button(action: { showVerifySheet = true }) {
                             Image(systemName: "qrcode")
                                 .font(.bitchatSystem(size: 14))
@@ -925,12 +958,17 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("Close")
                 }
-                let activeText = String.localizedStringWithFormat(
-                    String(localized: "%@ active", comment: "Count of active users in the people sheet"),
-                    "\(peopleSheetActiveCount)"
-                )
+                Picker("", selection: $sidebarTab) {
+                    Text("people").tag(SidebarTab.people)
+                    Text("sessions").tag(SidebarTab.sessions)
+                }
+                .pickerStyle(.segmented)
 
-                if let subtitle = peopleSheetSubtitle {
+                if sidebarTab == .sessions {
+                    Text("Resumes start a brand‑new, private agent chat with your history.")
+                        .font(.bitchatSystem(size: 12, design: .monospaced))
+                        .foregroundColor(.secondary)
+                } else if let subtitle = peopleSheetSubtitle {
                     let subtitleColor: Color = {
                         switch locationManager.selectedChannel {
                         case .mesh:
@@ -942,12 +980,12 @@ struct ContentView: View {
                     HStack(spacing: 6) {
                         Text(subtitle)
                             .foregroundColor(subtitleColor)
-                        Text(activeText)
+                        Text(sidebarCountText)
                             .foregroundColor(.secondary)
                     }
                     .font(.bitchatSystem(size: 12, design: .monospaced))
                 } else {
-                    Text(activeText)
+                    Text(sidebarCountText)
                         .font(.bitchatSystem(size: 12, design: .monospaced))
                         .foregroundColor(.secondary)
                 }
@@ -959,7 +997,16 @@ struct ContentView: View {
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
-                    if case .location = locationManager.selectedChannel {
+                    if sidebarTab == .sessions {
+                        SidebarSessionsView(
+                            viewModel: viewModel,
+                            textColor: textColor,
+                            secondaryTextColor: secondaryTextColor,
+                            onSelectSession: {
+                                showSidebar = true
+                            }
+                        )
+                    } else if case .location = locationManager.selectedChannel {
                         GeohashPeopleList(
                             viewModel: viewModel,
                             textColor: textColor,

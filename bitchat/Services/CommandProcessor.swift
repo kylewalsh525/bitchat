@@ -45,6 +45,7 @@ protocol CommandContextProvider: AnyObject {
     func clearCurrentPublicTimeline()
     func sendPublicRaw(_ content: String)
     func dispatchAgentRequest(role: String, prompt: String) -> CommandResult
+    func handleAgentSessionCommand(_ args: String) -> CommandResult
     func updateAgentConfig(_ config: AgentConfig)
 
     // MARK: - System Messages
@@ -114,6 +115,8 @@ final class CommandProcessor {
             return handleAgentTimeout(args)
         case "/agentstream":
             return handleAgentStream(args)
+        case "/agentsession":
+            return handleAgentSession(args)
         case "/hug":
             return handleEmote(args, command: "hug", action: "hugs", emoji: "🫂")
         case "/slap":
@@ -332,6 +335,11 @@ final class CommandProcessor {
         next.runtime.streamResponses = trimmed == "on"
         ctx.updateAgentConfig(next)
         return .success(message: "agent streaming set to \(trimmed)")
+    }
+
+    private func handleAgentSession(_ args: String) -> CommandResult {
+        guard let ctx = contextProvider else { return .error(message: "agent sessions unavailable") }
+        return ctx.handleAgentSessionCommand(args)
     }
     
     private func handleEmote(_ args: String, command: String, action: String, emoji: String, suffix: String = "") -> CommandResult {

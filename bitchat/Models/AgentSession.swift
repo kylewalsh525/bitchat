@@ -20,6 +20,9 @@ struct AgentSession: Equatable {
     let role: String
     let createdAt: Date
     let senderAlias: String
+    let recordID: String?
+    var seedHistory: [AgentSessionMessage]
+    var seedInjected: Bool
     var history: [AgentSessionMessage]
 
     mutating func appendMessage(role: String, content: String, limit: Int) {

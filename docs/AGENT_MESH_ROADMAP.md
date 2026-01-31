@@ -23,12 +23,12 @@ scopes without stepping on each other.
 
 ## Current Status (as of now)
 - Phase 0: Done
-- Phase 1: Partial (runtime + gateway done; dedicated agent setup UI + model catalog pending)
+- Phase 1: Partial (runtime + gateway done; agent setup UI + manual model discovery in progress)
 - Phase 2: Done
 - Phase 3: Done
 - Phase 4: Not started
 - Phase 5: Not started
-- Phase 6: Partial (session IDs + agent DM threads exist; no session store or /agentsession commands)
+- Phase 6: Partial (session store/commands + session history UI done; memory UI + opt-in auto-recall pending)
 - Phase 7: Not started
 
 ## Roadmap Focus Update (Distributed LLM Horsepower)

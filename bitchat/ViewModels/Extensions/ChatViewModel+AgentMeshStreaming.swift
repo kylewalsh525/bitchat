@@ -97,6 +97,9 @@ extension ChatViewModel {
 
         if chunk.isFinal {
             cancelAgentStreamTimeout(requestID: chunk.requestID, sessionID: sessionID)
+            if let sessionID = buffer.sessionID {
+                appendAgentSessionHistory(sessionID: sessionID, role: "assistant", content: buffer.text)
+            }
             agentStreamingBuffers.removeValue(forKey: key)
             agentStreamingRetries.remove(key)
             _ = pendingAgentRequests.removeValue(forKey: chunk.requestID)

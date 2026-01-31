@@ -302,7 +302,13 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     var agentStreamingBuffers: [String: AgentStreamingBuffer] = [:]
     var agentSessionsByThread: [PeerID: AgentSession] = [:]
     var agentThreadsBySessionID: [String: PeerID] = [:]
-    let agentSessionHistoryLimit = 20
+    let agentSessionHistoryLimit = TransportConfig.agentSessionStoreMaxHistoryTurns
+    let agentSessionStore = AgentSessionStore()
+    @Published var agentSessionHistory: [AgentSessionRecord] = []
+    @Published var agentCatalog: AgentCatalog? = nil
+    @Published var agentCatalogStatus: AgentCatalogStatus = .idle
+    @Published var agentGatewayHealth: AgentGatewayHealth = .idle
+    private let agentCatalogService = AgentCatalogService()
 
     struct AgentRequestContext {
         let role: String
@@ -351,6 +357,55 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
     func normalizeSessionID(_ sessionID: String) -> String {
         sessionID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    // MARK: - Agent Catalog / Gateway Health
+
+    @MainActor
+    func testAgentGatewayHealth() {
+        agentGatewayHealth = .checking
+        let urlString = agentConfig.runtime.gatewayURL
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.agentCatalogService.checkHealth(urlString: urlString)
+            await MainActor.run {
+                switch result {
+                case .success:
+                    self.agentGatewayHealth = .ok(Date())
+                case .failure(let error):
+                    self.agentGatewayHealth = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func fetchAgentCatalog() {
+        agentCatalogStatus = .loading
+        let urlString = agentConfig.runtime.gatewayURL
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.agentCatalogService.fetchCatalog(urlString: urlString)
+            await MainActor.run {
+                switch result {
+                case .success(let catalog):
+                    self.agentCatalog = catalog
+                    self.agentCatalogStatus = .loaded(Date())
+                case .failure(let error):
+                    self.agentCatalogStatus = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func applyAgentGatewayPreset(_ preset: AgentGatewayPreset) {
+        var next = agentConfig
+        next.runtime.gatewayPreset = preset
+        if preset != .custom {
+            next.runtime.gatewayURL = preset.defaultURL
+        }
+        updateAgentConfig(next)
     }
     
     // MARK: - Social Features (Delegated to PeerStateManager)
@@ -527,6 +582,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         loadNickname()
         loadAgentConfig()
         loadVerifiedFingerprints()
+        refreshAgentSessionHistory()
         meshService.delegate = self
         
         // Log startup info
@@ -3571,7 +3627,8 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             sessionID: sessionID,
             role: request.role,
             peerNickname: senderAlias,
-            senderAlias: senderAlias
+            senderAlias: senderAlias,
+            persist: false
         )
         let senderName = session.peerNickname
         let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)

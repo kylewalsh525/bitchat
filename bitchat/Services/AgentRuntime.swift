@@ -55,8 +55,24 @@ enum AgentRuntimeMode: String, Codable {
     case gateway
 }
 
+enum AgentGatewayPreset: String, Codable {
+    case localOllama
+    case localLMStudio
+    case custom
+
+    var defaultURL: String {
+        switch self {
+        case .localOllama, .localLMStudio:
+            return "http://127.0.0.1:8080/agent/run"
+        case .custom:
+            return "http://127.0.0.1:8080/agent/run"
+        }
+    }
+}
+
 struct AgentRuntimeConfig: Codable, Equatable {
     var mode: AgentRuntimeMode
+    var gatewayPreset: AgentGatewayPreset
     var gatewayURL: String
     var gatewayToken: String?
     var timeoutSeconds: UInt32
@@ -68,6 +84,7 @@ struct AgentRuntimeConfig: Codable, Equatable {
 
     static let `default` = AgentRuntimeConfig(
         mode: .echo,
+        gatewayPreset: .localOllama,
         gatewayURL: "http://127.0.0.1:8080/agent/run",
         gatewayToken: nil,
         timeoutSeconds: 30,
@@ -76,14 +93,16 @@ struct AgentRuntimeConfig: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case mode
+        case gatewayPreset
         case gatewayURL
         case gatewayToken
         case timeoutSeconds
         case streamResponses
     }
 
-    init(mode: AgentRuntimeMode, gatewayURL: String, gatewayToken: String?, timeoutSeconds: UInt32, streamResponses: Bool) {
+    init(mode: AgentRuntimeMode, gatewayPreset: AgentGatewayPreset, gatewayURL: String, gatewayToken: String?, timeoutSeconds: UInt32, streamResponses: Bool) {
         self.mode = mode
+        self.gatewayPreset = gatewayPreset
         self.gatewayURL = gatewayURL
         self.gatewayToken = gatewayToken
         self.timeoutSeconds = timeoutSeconds
@@ -93,6 +112,7 @@ struct AgentRuntimeConfig: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         mode = try container.decodeIfPresent(AgentRuntimeMode.self, forKey: .mode) ?? .echo
+        gatewayPreset = try container.decodeIfPresent(AgentGatewayPreset.self, forKey: .gatewayPreset) ?? .localOllama
         gatewayURL = try container.decodeIfPresent(String.self, forKey: .gatewayURL) ?? "http://127.0.0.1:8080/agent/run"
         gatewayToken = try container.decodeIfPresent(String.self, forKey: .gatewayToken)
         timeoutSeconds = try container.decodeIfPresent(UInt32.self, forKey: .timeoutSeconds) ?? 30
@@ -102,6 +122,7 @@ struct AgentRuntimeConfig: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(mode, forKey: .mode)
+        try container.encode(gatewayPreset, forKey: .gatewayPreset)
         try container.encode(gatewayURL, forKey: .gatewayURL)
         try container.encodeIfPresent(gatewayToken, forKey: .gatewayToken)
         try container.encode(timeoutSeconds, forKey: .timeoutSeconds)

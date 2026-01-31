@@ -3,6 +3,7 @@ import SwiftUI
 struct AppInfoView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) var colorScheme
+    var onOpenAgentSettings: (() -> Void)? = nil
     
     private var backgroundColor: Color {
         colorScheme == .dark ? Color.black : Color.white
@@ -144,6 +145,21 @@ struct AppInfoView: View {
                 Text(Strings.tagline)
                     .font(.bitchatSystem(size: 16, design: .monospaced))
                     .foregroundColor(secondaryTextColor)
+
+                if let onOpenAgentSettings {
+                    Button(action: onOpenAgentSettings) {
+                        Text("Agent setup")
+                            .font(.bitchatSystem(size: 12, design: .monospaced))
+                            .foregroundColor(textColor)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(textColor.opacity(0.6), lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical)
