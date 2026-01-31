@@ -13,6 +13,7 @@ struct TextMessageView: View {
     @EnvironmentObject private var viewModel: ChatViewModel
     
     let message: BitchatMessage
+    let showStreamingIndicator: Bool
     @Binding var expandedMessageIDs: Set<String>
     
     var body: some View {
@@ -27,6 +28,12 @@ struct TextMessageView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .lineLimit(isLong && !isExpanded ? TransportConfig.uiLongMessageLineLimit : nil)
                     .frame(maxWidth: .infinity, alignment: .leading)
+
+                if showStreamingIndicator {
+                    StreamingDotsView()
+                        .padding(.leading, 6)
+                        .padding(.top, 2)
+                }
                 
                 // Delivery status indicator for private messages
                 if message.isPrivate && viewModel.isSelfMessage(message),
@@ -66,6 +73,34 @@ struct TextMessageView: View {
     }
 }
 
+private struct StreamingDotsView: View {
+    @State private var phase: Int = 0
+
+    var body: some View {
+        Text(dots(for: phase))
+            .font(.bitchatSystem(size: 12, weight: .medium, design: .monospaced))
+            .foregroundColor(.secondary)
+            .onAppear {
+                phase = 0
+            }
+            .task {
+                while true {
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    phase = (phase + 1) % 4
+                }
+            }
+    }
+
+    private func dots(for phase: Int) -> String {
+        switch phase {
+        case 1: return "·"
+        case 2: return "··"
+        case 3: return "···"
+        default: return ""
+        }
+    }
+}
+
 @available(macOS 14, iOS 17, *)
 #Preview {
     @Previewable @State var ids: Set<String> = []
@@ -73,7 +108,7 @@ struct TextMessageView: View {
     
     Group {
         List {
-            TextMessageView(message: .preview, expandedMessageIDs: $ids)
+            TextMessageView(message: .preview, showStreamingIndicator: false, expandedMessageIDs: $ids)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(EmptyView())
@@ -81,7 +116,7 @@ struct TextMessageView: View {
         .environment(\.colorScheme, .light)
         
         List {
-            TextMessageView(message: .preview, expandedMessageIDs: $ids)
+            TextMessageView(message: .preview, showStreamingIndicator: true, expandedMessageIDs: $ids)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(EmptyView())

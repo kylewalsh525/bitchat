@@ -104,6 +104,26 @@ extension ChatViewModel {
         }
     }
 
+    @MainActor
+    func isStreamingAgentMessage(_ message: BitchatMessage) -> Bool {
+        let requestID = extractRequestID(from: message.id)
+        guard !requestID.isEmpty else { return false }
+        return agentStreamingBuffers.keys.contains { $0.hasPrefix(requestID) }
+    }
+
+    private func extractRequestID(from messageID: String) -> String {
+        if messageID.hasPrefix("agent-resp-in-") {
+            return String(messageID.dropFirst("agent-resp-in-".count))
+        }
+        if messageID.hasPrefix("agent-resp-out-") {
+            return String(messageID.dropFirst("agent-resp-out-".count))
+        }
+        if messageID.hasPrefix("agent-resp-") {
+            return String(messageID.dropFirst("agent-resp-".count))
+        }
+        return ""
+    }
+
     private func streamingKey(requestID: String, sessionID: String?) -> String {
         if let sessionID {
             return "\(requestID)|\(sessionID)"

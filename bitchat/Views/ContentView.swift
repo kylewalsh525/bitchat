@@ -1588,7 +1588,11 @@ private extension ContentView {
         } else if let media = mediaAttachment(for: message) {
             mediaMessageRow(message: message, media: media)
         } else {
-            TextMessageView(message: message, expandedMessageIDs: $expandedMessageIDs)
+            TextMessageView(
+                message: message,
+                showStreamingIndicator: viewModel.isStreamingAgentMessage(message),
+                expandedMessageIDs: $expandedMessageIDs
+            )
         }
     }
 
