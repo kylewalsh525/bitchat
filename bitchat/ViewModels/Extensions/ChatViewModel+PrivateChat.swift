@@ -310,6 +310,73 @@ extension ChatViewModel {
     }
 
     @MainActor
+    private func agentMediaRoutingContext() -> (threadPeer: PeerID, targetPeer: PeerID, contextID: String)? {
+        guard agentConfig.info == nil,
+              let threadPeer = selectedPrivateChatPeer,
+              threadPeer.isAgentSession,
+              let session = resolveAgentSession(for: threadPeer) else {
+            return nil
+        }
+        return (threadPeer: session.threadID, targetPeer: session.peerID, contextID: session.sessionID)
+    }
+
+    @MainActor
+    func sendDraftAttachments(_ attachments: [DraftAttachment], threadPeer: PeerID?, targetPeer: PeerID?, contextID: String?) {
+        guard canSendMediaInCurrentContext else { return }
+        if contextID != nil && targetPeer == nil {
+            SecureLogger.warning("🚫 Agent attachment missing target peer; skipping broadcast", category: .session)
+            return
+        }
+        for attachment in attachments {
+            if attachment.kind == "image" {
+                sendProcessedImage(attachment.url, threadPeer: threadPeer, targetPeer: targetPeer, contextID: contextID)
+            }
+        }
+    }
+
+    @MainActor
+    private func sendProcessedImage(_ url: URL, threadPeer: PeerID?, targetPeer: PeerID?, contextID: String?) {
+        let message = enqueueMediaMessage(content: "[image] \(url.lastPathComponent)", targetPeer: threadPeer)
+        let messageID = message.id
+        let transferId = makeTransferID(messageID: messageID)
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
+            do {
+                let data = try Data(contentsOf: url)
+                guard data.count <= FileTransferLimits.maxImageBytes else {
+                    SecureLogger.warning("Processed image exceeds size limit (\(data.count) bytes)", category: .session)
+                    await MainActor.run {
+                        self.handleMediaSendFailure(messageID: messageID, reason: "Image too large")
+                    }
+                    return
+                }
+                let packet = BitchatFilePacket(
+                    fileName: url.lastPathComponent,
+                    fileSize: UInt64(data.count),
+                    mimeType: "image/jpeg",
+                    contextID: contextID,
+                    content: data
+                )
+                guard packet.encode() != nil else { throw MediaSendError.encodingFailed }
+                await MainActor.run {
+                    self.registerTransfer(transferId: transferId, messageID: messageID)
+                    if let peerID = targetPeer {
+                        self.meshService.sendFilePrivate(packet, to: peerID, transferId: transferId)
+                    } else {
+                        self.meshService.sendFileBroadcast(packet, transferId: transferId)
+                    }
+                }
+            } catch {
+                SecureLogger.error("Image send preparation failed: \(error)", category: .session)
+                await MainActor.run {
+                    self.handleMediaSendFailure(messageID: messageID, reason: "Failed to send image")
+                }
+            }
+        }
+    }
+
+    @MainActor
     func sendVoiceNote(at url: URL) {
         guard canSendMediaInCurrentContext else {
             SecureLogger.info("Voice note blocked outside mesh/private context", category: .session)
@@ -318,8 +385,11 @@ extension ChatViewModel {
             return
         }
 
-        let targetPeer = selectedPrivateChatPeer
-        let message = enqueueMediaMessage(content: "[voice] \(url.lastPathComponent)", targetPeer: targetPeer)
+        let routing = agentMediaRoutingContext()
+        let threadPeer = routing?.threadPeer ?? selectedPrivateChatPeer
+        let targetPeer = routing?.targetPeer ?? selectedPrivateChatPeer
+        let contextID = routing?.contextID
+        let message = enqueueMediaMessage(content: "[voice] \(url.lastPathComponent)", targetPeer: threadPeer)
         let messageID = message.id
         let transferId = makeTransferID(messageID: messageID)
 
@@ -344,6 +414,7 @@ extension ChatViewModel {
                     fileName: url.lastPathComponent,
                     fileSize: UInt64(data.count),
                     mimeType: "audio/mp4",
+                    contextID: contextID,
                     content: data
                 )
                 guard packet.encode() != nil else { throw MediaSendError.encodingFailed }
@@ -372,52 +443,8 @@ extension ChatViewModel {
             addSystemMessage("Images are only available in mesh chats.")
             return
         }
-
-        let targetPeer = selectedPrivateChatPeer
-
-        Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self = self else { return }
-            var processedURL: URL?
-            do {
-                let outputURL = try ImageUtils.processImage(at: sourceURL)
-                processedURL = outputURL
-                let data = try Data(contentsOf: outputURL)
-                guard data.count <= FileTransferLimits.maxImageBytes else {
-                    SecureLogger.warning("Processed image exceeds size limit (\(data.count) bytes)", category: .session)
-                    await MainActor.run {
-                        self.addSystemMessage("Image is too large to send.")
-                    }
-                    try? FileManager.default.removeItem(at: outputURL)
-                    return
-                }
-                let packet = BitchatFilePacket(
-                    fileName: outputURL.lastPathComponent,
-                    fileSize: UInt64(data.count),
-                    mimeType: "image/jpeg",
-                    content: data
-                )
-                guard packet.encode() != nil else { throw MediaSendError.encodingFailed }
-                await MainActor.run {
-                    let message = self.enqueueMediaMessage(content: "[image] \(outputURL.lastPathComponent)", targetPeer: targetPeer)
-                    let messageID = message.id
-                    let transferId = self.makeTransferID(messageID: messageID)
-                    self.registerTransfer(transferId: transferId, messageID: messageID)
-                    if let peerID = targetPeer {
-                        self.meshService.sendFilePrivate(packet, to: peerID, transferId: transferId)
-                    } else {
-                        self.meshService.sendFileBroadcast(packet, transferId: transferId)
-                    }
-                }
-            } catch {
-                SecureLogger.error("Image send preparation failed: \(error)", category: .session)
-                await MainActor.run {
-                    self.addSystemMessage("Failed to prepare image for sending.")
-                }
-                if let url = processedURL {
-                    try? FileManager.default.removeItem(at: url)
-                }
-            }
-        }
+        queueDraftImage(url: sourceURL, for: selectedPrivateChatPeer)
+        cleanup?()
     }
 
     @MainActor
@@ -426,8 +453,14 @@ extension ChatViewModel {
         let message: BitchatMessage
 
         if let peerID = targetPeer {
+            let senderName: String = {
+                if peerID.isAgentSession, let alias = agentSessionOutgoingDisplayName(for: peerID) {
+                    return alias
+                }
+                return nickname
+            }()
             message = BitchatMessage(
-                sender: nickname,
+                sender: senderName,
                 content: content,
                 timestamp: timestamp,
                 isRelay: false,
@@ -921,6 +954,9 @@ extension ChatViewModel {
     /// Migrate private chats when peer reconnects with new ID
     @MainActor
     func migratePrivateChatsIfNeeded(for peerID: PeerID, senderNickname: String) {
+        if peerID.isAgentSession {
+            return
+        }
         let currentFingerprint = getFingerprint(for: peerID)
         
         if privateChats[peerID] == nil || privateChats[peerID]?.isEmpty == true {
@@ -931,6 +967,7 @@ extension ChatViewModel {
             let cutoffTime = Date().addingTimeInterval(-TransportConfig.uiMigrationCutoffSeconds)
             
             for (oldPeerID, messages) in privateChats {
+                if oldPeerID.isAgentSession { continue }
                 if oldPeerID != peerID {
                     let oldFingerprint = peerIDToPublicKeyFingerprint[oldPeerID]
                     

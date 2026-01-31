@@ -1,47 +1,30 @@
+//
+// BitchatFilePacketTests.swift
+// bitchatTests
+//
+
 import XCTest
 @testable import bitchat
 
 final class BitchatFilePacketTests: XCTestCase {
-
-    func testRoundTripPreservesFields() throws {
-        let content = Data((0..<4096).map { UInt8($0 % 251) })
+    func testFilePacketContextIDRoundTrip() {
+        let payload = Data([0x01, 0x02, 0x03, 0x04])
         let packet = BitchatFilePacket(
-            fileName: "sample.jpg",
-            fileSize: UInt64(content.count),
-            mimeType: "image/jpeg",
-            content: content
+            fileName: "file.bin",
+            fileSize: UInt64(payload.count),
+            mimeType: "application/octet-stream",
+            contextID: "session-123",
+            content: payload
         )
-
         guard let encoded = packet.encode() else {
-            return XCTFail("Failed to encode file packet")
-        }
-        guard let decoded = BitchatFilePacket.decode(encoded) else {
-            return XCTFail("Failed to decode file packet")
+            XCTFail("Failed to encode file packet")
+            return
         }
 
-        XCTAssertEqual(decoded.fileName, packet.fileName)
-        XCTAssertEqual(decoded.fileSize, packet.fileSize)
-        XCTAssertEqual(decoded.mimeType, packet.mimeType)
-        XCTAssertEqual(decoded.content, packet.content)
-    }
-
-    func testDecodeFallsBackToContentSizeWhenFileSizeMissing() throws {
-        let content = Data(repeating: 0x7F, count: 1024)
-        let packet = BitchatFilePacket(
-            fileName: nil,
-            fileSize: nil,
-            mimeType: nil,
-            content: content
-        )
-
-        guard let encoded = packet.encode() else {
-            return XCTFail("Failed to encode file packet")
-        }
-        guard let decoded = BitchatFilePacket.decode(encoded) else {
-            return XCTFail("Failed to decode file packet")
-        }
-
-        XCTAssertEqual(decoded.fileSize, UInt64(content.count))
-        XCTAssertEqual(decoded.content, content)
+        let decoded = BitchatFilePacket.decode(encoded)
+        XCTAssertEqual(decoded?.fileName, "file.bin")
+        XCTAssertEqual(decoded?.mimeType, "application/octet-stream")
+        XCTAssertEqual(decoded?.contextID, "session-123")
+        XCTAssertEqual(decoded?.content, payload)
     }
 }

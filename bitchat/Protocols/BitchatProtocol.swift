@@ -181,6 +181,11 @@ protocol BitchatDelegate: AnyObject {
     // Low-level events for better separation of concerns
     func didReceiveNoisePayload(from peerID: PeerID, type: NoisePayloadType, payload: Data, timestamp: Date)
 
+    /// Resolve an agent session thread for incoming file attachments.
+    func resolveAgentThread(for peerID: PeerID, sessionID: String) -> PeerID?
+    /// Resolve an agent session display name for incoming file attachments.
+    func agentSessionDisplayName(for sessionID: String) -> String?
+
     // Bluetooth state updates for user notifications
     func didUpdateBluetoothState(_ state: CBManagerState)
     func didReceivePublicMessage(from peerID: PeerID, nickname: String, content: String, timestamp: Date, messageID: String?)
@@ -198,6 +203,14 @@ extension BitchatDelegate {
 
     func didReceiveNoisePayload(from peerID: PeerID, type: NoisePayloadType, payload: Data, timestamp: Date) {
         // Default empty implementation
+    }
+
+    func resolveAgentThread(for peerID: PeerID, sessionID: String) -> PeerID? {
+        return nil
+    }
+
+    func agentSessionDisplayName(for sessionID: String) -> String? {
+        return nil
     }
 
     func didReceivePublicMessage(from peerID: PeerID, nickname: String, content: String, timestamp: Date, messageID: String?) {

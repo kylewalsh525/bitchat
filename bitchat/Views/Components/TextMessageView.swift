@@ -29,7 +29,7 @@ struct TextMessageView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 
                 // Delivery status indicator for private messages
-                if message.isPrivate && message.sender == viewModel.nickname,
+                if message.isPrivate && viewModel.isSelfMessage(message),
                    let status = message.deliveryStatus {
                     DeliveryStatusView(status: status)
                         .padding(.leading, 4)

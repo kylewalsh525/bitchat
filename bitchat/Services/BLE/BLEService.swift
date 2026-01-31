@@ -884,6 +884,18 @@ final class BLEService: NSObject {
         return true
     }
 
+    private func shouldAcceptMismatchedSender(packet: BitchatPacket, knownPeerID: PeerID, claimedSenderID: PeerID) -> Bool {
+        _ = knownPeerID
+        _ = claimedSenderID
+        if packet.type == MessageType.announce.rawValue && packet.ttl == messageTTL {
+            return true
+        }
+        if packet.ttl < messageTTL {
+            return true
+        }
+        return false
+    }
+
     // MARK: - Packet Broadcasting
     
     private func broadcastPacket(_ packet: BitchatPacket, transferId: String? = nil) {
@@ -1271,6 +1283,11 @@ final class BLEService: NSObject {
         }
 
         let isPrivateMessage = PeerID(hexData: packet.recipientID) == myPeerID
+        let agentThread = filePacket.contextID.flatMap { delegate?.resolveAgentThread(for: peerID, sessionID: $0) }
+        if let sessionID = filePacket.contextID,
+           let alias = delegate?.agentSessionDisplayName(for: sessionID) {
+            senderNickname = alias
+        }
 
         if isPrivateMessage {
             updatePeerLastSeen(peerID)
@@ -1285,7 +1302,7 @@ final class BLEService: NSObject {
             originalSender: nil,
             isPrivate: isPrivateMessage,
             recipientNickname: nil,
-            senderPeerID: peerID
+            senderPeerID: agentThread ?? peerID
         )
 
         SecureLogger.debug("📁 Stored incoming media from \(peerID.id.prefix(8))… -> \(destination.lastPathComponent)", category: .session)
@@ -2234,10 +2251,24 @@ extension BLEService: CBPeripheralDelegate {
             let trustedSenderID: PeerID?
             if let knownPeerID = boundPeerID {
                 if knownPeerID != claimedSenderID {
-                    SecureLogger.warning("🚫 SECURITY: Sender ID spoofing attempt detected! Peripheral \(peripheralUUID.prefix(8))… claimed to be \(claimedSenderID.id.prefix(8))… but is bound to \(knownPeerID.id.prefix(8))…", category: .security)
-                    continue
+                    if shouldAcceptMismatchedSender(packet: packet, knownPeerID: knownPeerID, claimedSenderID: claimedSenderID) {
+                        if packet.type == MessageType.announce.rawValue && packet.ttl == messageTTL {
+                            SecureLogger.warning("⚠️ Rebinding peripheral \(peripheralUUID.prefix(8))… from \(knownPeerID.id.prefix(8))… to \(claimedSenderID.id.prefix(8))… (direct announce)", category: .session)
+                            boundPeerID = claimedSenderID
+                            state.peerID = claimedSenderID
+                            peripherals[peripheralUUID] = state
+                            peerToPeripheralUUID[claimedSenderID] = peripheralUUID
+                        } else {
+                            SecureLogger.warning("⚠️ Allowing relayed packet from \(claimedSenderID.id.prefix(8))… via bound \(knownPeerID.id.prefix(8))…", category: .session)
+                        }
+                        trustedSenderID = claimedSenderID
+                    } else {
+                        SecureLogger.warning("🚫 SECURITY: Sender ID spoofing attempt detected! Peripheral \(peripheralUUID.prefix(8))… claimed to be \(claimedSenderID.id.prefix(8))… but is bound to \(knownPeerID.id.prefix(8))…", category: .security)
+                        continue
+                    }
+                } else {
+                    trustedSenderID = knownPeerID
                 }
-                trustedSenderID = knownPeerID
             } else {
                 trustedSenderID = nil
             }
@@ -2674,10 +2705,21 @@ extension BLEService: CBPeripheralManagerDelegate {
                 let trustedSenderID: PeerID?
                 if let knownPeerID = centralToPeerID[centralUUID] {
                     if knownPeerID != claimedSenderID {
-                        SecureLogger.warning("🚫 SECURITY: Sender ID spoofing attempt detected! Central \(centralUUID.prefix(8))… claimed to be \(claimedSenderID.id.prefix(8))… but is bound to \(knownPeerID.id.prefix(8))…", category: .security)
-                        continue
+                        if shouldAcceptMismatchedSender(packet: packet, knownPeerID: knownPeerID, claimedSenderID: claimedSenderID) {
+                            if packet.type == MessageType.announce.rawValue && packet.ttl == messageTTL {
+                                SecureLogger.warning("⚠️ Rebinding central \(centralUUID.prefix(8))… from \(knownPeerID.id.prefix(8))… to \(claimedSenderID.id.prefix(8))… (direct announce)", category: .session)
+                                centralToPeerID[centralUUID] = claimedSenderID
+                            } else {
+                                SecureLogger.warning("⚠️ Allowing relayed packet from \(claimedSenderID.id.prefix(8))… via bound \(knownPeerID.id.prefix(8))…", category: .session)
+                            }
+                            trustedSenderID = claimedSenderID
+                        } else {
+                            SecureLogger.warning("🚫 SECURITY: Sender ID spoofing attempt detected! Central \(centralUUID.prefix(8))… claimed to be \(claimedSenderID.id.prefix(8))… but is bound to \(knownPeerID.id.prefix(8))…", category: .security)
+                            continue
+                        }
+                    } else {
+                        trustedSenderID = knownPeerID
                     }
-                    trustedSenderID = knownPeerID
                 } else {
                     trustedSenderID = nil
                 }

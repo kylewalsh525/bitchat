@@ -101,6 +101,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     @MainActor
     var canSendMediaInCurrentContext: Bool {
         if let peer = selectedPrivateChatPeer {
+            if peer.isAgentSession { return agentConfig.info == nil }
             return !(peer.isGeoDM || peer.isGeoChat)
         }
         switch activeChannel {
@@ -294,15 +295,45 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
     // MARK: - Agent Configuration
     @Published private(set) var agentConfig: AgentConfig = .default
-    private let agentRuntime: AgentRuntime = EchoAgentRuntime()
+    @Published private(set) var agentRuntimeStatus = AgentRuntimeStatus()
+    private var agentMeshFlags = AgentMeshFeatureFlags.load()
+    private var agentRuntime: AgentRuntime = EchoAgentRuntime()
+    var agentResponseAssembler = AgentResponseAssembler()
+    var agentSessionsByThread: [PeerID: AgentSession] = [:]
+    var agentThreadsBySessionID: [String: PeerID] = [:]
+    let agentSessionHistoryLimit = 20
 
-    private struct AgentRequestContext {
+    struct AgentRequestContext {
         let role: String
         let targetPeerID: PeerID
         let targetNickname: String
+        let sessionID: String
+        let threadID: PeerID
+        let prompt: String
         let sentAt: Date
     }
-    private var pendingAgentRequests: [String: AgentRequestContext] = [:]
+    var pendingAgentRequests: [String: AgentRequestContext] = [:]
+    private var agentResponseTimeouts: [String: Timer] = [:]
+    private var agentResponseRetries: Set<String> = []
+
+    struct DraftAttachment {
+        let url: URL
+        let mimeType: String
+        let kind: String
+    }
+    @MainActor
+    var draftAttachmentsByContext: [String: [DraftAttachment]] = [:]
+    private var pendingAgentDraftAttachments: [DraftAttachment] = []
+    var pendingAgentAttachmentCount: UInt8?
+    private var pendingAgentAttachmentsBySessionID: [String: [AgentSessionAttachment]] = [:]
+    private var pendingAgentAttachmentsByPeerID: [PeerID: [AgentSessionAttachment]] = [:]
+
+    private let agentAttachmentWaitTimeoutSeconds: TimeInterval = 180
+    private let agentAttachmentLookbackSeconds: TimeInterval = 120
+
+    func normalizeSessionID(_ sessionID: String) -> String {
+        sessionID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
     
     // MARK: - Social Features (Delegated to PeerStateManager)
     
@@ -492,6 +523,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         // Set nickname before starting services
         meshService.setNickname(nickname)
         applyAgentConfig()
+        applyAgentRuntimeConfig()
         
         // Start mesh service immediately
         meshService.startServices()
@@ -812,12 +844,46 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             bleService.setAgentInfo(agentConfig.info)
         }
     }
+    
+    private func applyAgentRuntimeConfig() {
+        agentMeshFlags = AgentMeshFeatureFlags.load()
+        guard agentMeshFlags.enableRuntime else {
+            agentRuntime = EchoAgentRuntime()
+            return
+        }
+        switch agentConfig.runtime.mode {
+        case .echo:
+            agentRuntime = EchoAgentRuntime()
+        case .gateway:
+            guard agentMeshFlags.enableGateway else {
+                agentRuntime = EchoAgentRuntime()
+                return
+            }
+            agentRuntime = GatewayAgentRuntime(
+                config: agentConfig.runtime,
+                onHealthUpdate: { [weak self] event in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        switch event {
+                        case .success(let date):
+                            self.agentRuntimeStatus.recordSuccess(at: date)
+                        case .failure(let message, let date):
+                            self.agentRuntimeStatus.recordFailure(message, at: date)
+                            AgentMeshLogger.log(.runtimeError(message: message))
+                            self.addSystemMessage("agent runtime error: \(message)")
+                        }
+                    }
+                }
+            )
+        }
+    }
 
     @MainActor
     func updateAgentConfig(_ next: AgentConfig) {
         agentConfig = next
         saveAgentConfig()
         applyAgentConfig()
+        applyAgentRuntimeConfig()
     }
     
     // MARK: - Favorites Management
@@ -1041,16 +1107,59 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     ///         Routes to private chat if one is selected, otherwise broadcasts
     @MainActor
     func sendMessage(_ content: String) {
+        if isAgentSessionReadOnly {
+            return
+        }
         // Ignore messages that are empty or whitespace-only to prevent blank lines
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        if trimmed.isEmpty {
+            let pending = draftAttachments(for: selectedPrivateChatPeer)
+            guard !pending.isEmpty else { return }
+            if let agentThread = selectedPrivateChatPeer, agentThread.isAgentSession {
+                addSystemMessage("add a prompt to send attachments to the agent")
+                return
+            }
+            let attachments = takeDraftAttachments(for: selectedPrivateChatPeer)
+            sendDraftAttachments(attachments, threadPeer: selectedPrivateChatPeer, targetPeer: selectedPrivateChatPeer, contextID: nil)
+            return
+        }
 
         // Check for commands
         if content.hasPrefix("/") {
+            if content.hasPrefix("/agent") {
+                pendingAgentDraftAttachments = takeDraftAttachments(for: selectedPrivateChatPeer)
+            }
             Task { @MainActor in
                 handleCommand(content)
             }
             return
+        }
+
+        let draftAttachments = takeDraftAttachments(for: selectedPrivateChatPeer)
+
+        if let agentThread = selectedPrivateChatPeer, agentThread.isAgentSession {
+            guard let session = resolveAgentSession(for: agentThread) else {
+                pendingAgentAttachmentCount = nil
+                addSystemMessage("agent session unavailable")
+                return
+            }
+            if !draftAttachments.isEmpty {
+                pendingAgentAttachmentCount = UInt8(min(draftAttachments.count, 255))
+            } else {
+                pendingAgentAttachmentCount = nil
+            }
+            sendAgentSessionMessage(prompt: trimmed, threadID: agentThread)
+            if !draftAttachments.isEmpty {
+                let delay = max(0.2, 0.2 * Double(draftAttachments.count))
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.sendDraftAttachments(draftAttachments, threadPeer: session.threadID, targetPeer: session.peerID, contextID: session.sessionID)
+                }
+            }
+            return
+        }
+
+        if !draftAttachments.isEmpty {
+            sendDraftAttachments(draftAttachments, threadPeer: selectedPrivateChatPeer, targetPeer: selectedPrivateChatPeer, contextID: nil)
         }
 
         if selectedPrivateChatPeer != nil {
@@ -1332,6 +1441,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
     @MainActor
     func nicknameForPeer(_ peerID: PeerID) -> String {
+        if peerID.isAgentSession {
+            return agentSessionDisplayName(for: peerID)
+        }
         if let name = meshService.peerNickname(peerID: peerID) {
             return name
         }
@@ -1345,6 +1457,76 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             return favorite.peerNickname
         }
         return "user"
+    }
+
+    func agentSessionDisplayName(for sessionID: String) -> String? {
+        let normalized = normalizeSessionID(sessionID)
+        guard let thread = agentThreadsBySessionID[normalized],
+              let session = agentSessionsByThread[thread] else {
+            return nil
+        }
+        return session.peerNickname
+    }
+
+    @MainActor
+    func agentSessionOutgoingDisplayName(for threadID: PeerID) -> String? {
+        guard let session = agentSessionsByThread[threadID] else { return nil }
+        if agentConfig.info != nil {
+            return nickname
+        }
+        return session.senderAlias
+    }
+
+    @MainActor
+    var isAgentSessionReadOnly: Bool {
+        agentConfig.info != nil && selectedPrivateChatPeer?.isAgentSession == true
+    }
+
+    @MainActor
+    func draftKey(for privatePeer: PeerID?) -> String {
+        if let peer = privatePeer { return "dm:\(peer.id)" }
+        switch activeChannel {
+        case .mesh:
+            return "mesh"
+        case .location(let ch):
+            return "geo:\(ch.geohash)"
+        }
+    }
+
+    @MainActor
+    func draftAttachments(for privatePeer: PeerID?) -> [DraftAttachment] {
+        let key = draftKey(for: privatePeer)
+        return draftAttachmentsByContext[key] ?? []
+    }
+
+    @MainActor
+    func queueDraftImage(url: URL, for privatePeer: PeerID?) {
+        let key = draftKey(for: privatePeer)
+        var list = draftAttachmentsByContext[key] ?? []
+        list.append(DraftAttachment(url: url, mimeType: "image/jpeg", kind: "image"))
+        draftAttachmentsByContext[key] = list
+        objectWillChange.send()
+    }
+
+    @MainActor
+    func removeDraftAttachment(at index: Int, for privatePeer: PeerID?) {
+        let key = draftKey(for: privatePeer)
+        var list = draftAttachmentsByContext[key] ?? []
+        guard list.indices.contains(index) else { return }
+        list.remove(at: index)
+        draftAttachmentsByContext[key] = list.isEmpty ? nil : list
+        objectWillChange.send()
+    }
+
+    @MainActor
+    func takeDraftAttachments(for privatePeer: PeerID?) -> [DraftAttachment] {
+        let key = draftKey(for: privatePeer)
+        let list = draftAttachmentsByContext[key] ?? []
+        draftAttachmentsByContext[key] = nil
+        if !list.isEmpty {
+            objectWillChange.send()
+        }
+        return list
     }
 
 
@@ -3054,10 +3236,149 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             } else {
                 handlePublicMessage(message)
             }
+            handleIncomingAgentAttachmentIfNeeded(message)
             
             // Post-processing
             checkForMentions(message)
             sendHapticFeedback(for: message)
+        }
+    }
+
+    @MainActor
+    private func handleIncomingAgentAttachmentIfNeeded(_ message: BitchatMessage) {
+        guard agentConfig.info != nil else { return }
+        guard let senderPeerID = message.senderPeerID else { return }
+        guard !isSelfMessage(message) else { return }
+        guard let attachment = agentAttachment(from: message) else { return }
+        if senderPeerID.isAgentSession {
+            let sessionKey = normalizeSessionID(senderPeerID.bare)
+            pendingAgentAttachmentsBySessionID[sessionKey, default: []].append(attachment)
+            return
+        }
+
+        pendingAgentAttachmentsByPeerID[senderPeerID, default: []].append(attachment)
+        prunePendingAgentAttachments(for: senderPeerID)
+    }
+
+    @MainActor
+    private func agentAttachment(from message: BitchatMessage) -> AgentSessionAttachment? {
+        let content = message.content
+        let isOutgoing = isSelfMessage(message)
+
+        let mapping: (String, String, String)? = {
+            if content.hasPrefix("[image] ") {
+                return ("[image] ", isOutgoing ? "images/outgoing" : "images/incoming", "image/jpeg")
+            }
+            if content.hasPrefix("[voice] ") {
+                return ("[voice] ", isOutgoing ? "voicenotes/outgoing" : "voicenotes/incoming", "audio/m4a")
+            }
+            if content.hasPrefix("[file] ") {
+                return ("[file] ", isOutgoing ? "files/outgoing" : "files/incoming", "application/octet-stream")
+            }
+            return nil
+        }()
+
+        guard let mapping else { return nil }
+        let rawFilename = String(content.dropFirst(mapping.0.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawFilename.isEmpty else { return nil }
+
+        guard let base = try? applicationFilesDirectory() else { return nil }
+        let fileName = (rawFilename as NSString).lastPathComponent
+        guard !fileName.isEmpty else { return nil }
+
+        let url = base.appendingPathComponent(mapping.1, isDirectory: true).appendingPathComponent(fileName)
+        let mimeType = inferredMimeType(for: fileName, fallback: mapping.2)
+        return AgentSessionAttachment(url: url, fileName: fileName, mimeType: mimeType, receivedAt: Date())
+    }
+
+    private func inferredMimeType(for fileName: String, fallback: String) -> String {
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        if let type = UTType(filenameExtension: ext), let mime = type.preferredMIMEType {
+            return mime
+        }
+        return fallback
+    }
+
+    @MainActor
+    private func prunePendingAgentAttachments(for peerID: PeerID) {
+        guard var list = pendingAgentAttachmentsByPeerID[peerID], !list.isEmpty else { return }
+        let cutoff = Date().addingTimeInterval(-(agentAttachmentLookbackSeconds + agentAttachmentWaitTimeoutSeconds))
+        list = list.filter { $0.receivedAt >= cutoff }
+        pendingAgentAttachmentsByPeerID[peerID] = list.isEmpty ? nil : list
+    }
+
+    @MainActor
+    private func takePendingAgentAttachments(sessionID: String, count: Int, since: Date?) -> [AgentSessionAttachment] {
+        let sessionKey = normalizeSessionID(sessionID)
+        guard var list = pendingAgentAttachmentsBySessionID[sessionKey], !list.isEmpty else { return [] }
+        let eligible = list.filter { attachment in
+            guard let since else { return true }
+            return attachment.receivedAt >= since
+        }
+        guard !eligible.isEmpty else { return [] }
+        let takeCount = min(count, eligible.count)
+        let taken = Array(eligible.prefix(takeCount))
+        for attachment in taken {
+            if let idx = list.firstIndex(of: attachment) {
+                list.remove(at: idx)
+            }
+        }
+        pendingAgentAttachmentsBySessionID[sessionKey] = list.isEmpty ? nil : list
+        return taken
+    }
+
+    @MainActor
+    private func takePendingAgentAttachments(peerID: PeerID, count: Int, since: Date?) -> [AgentSessionAttachment] {
+        guard var list = pendingAgentAttachmentsByPeerID[peerID], !list.isEmpty else { return [] }
+        let eligible = list.filter { attachment in
+            guard let since else { return true }
+            return attachment.receivedAt >= since
+        }
+        guard !eligible.isEmpty else { return [] }
+        let takeCount = min(count, eligible.count)
+        let taken = Array(eligible.prefix(takeCount))
+        for attachment in taken {
+            if let idx = list.firstIndex(of: attachment) {
+                list.remove(at: idx)
+            }
+        }
+        pendingAgentAttachmentsByPeerID[peerID] = list.isEmpty ? nil : list
+        return taken
+    }
+
+    private func awaitAgentAttachments(sessionID: String, peerID: PeerID, expected: Int, since: Date) async -> [AgentSessionAttachment] {
+        guard expected > 0 else { return [] }
+        let sessionKey = normalizeSessionID(sessionID)
+        let deadline = Date().addingTimeInterval(agentAttachmentWaitTimeoutSeconds)
+        while Date() < deadline {
+            let counts = await MainActor.run {
+                let sessionCount = pendingAgentAttachmentsBySessionID[sessionKey]?.filter { $0.receivedAt >= since }.count ?? 0
+                let peerCount = pendingAgentAttachmentsByPeerID[peerID]?.filter { $0.receivedAt >= since }.count ?? 0
+                return (sessionCount, peerCount)
+            }
+            if counts.0 >= expected || (counts.0 + counts.1) >= expected {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return await MainActor.run {
+            var taken = takePendingAgentAttachments(sessionID: sessionID, count: expected, since: since)
+            if taken.count < expected {
+                let remaining = expected - taken.count
+                let fallback = takePendingAgentAttachments(peerID: peerID, count: remaining, since: since)
+                taken.append(contentsOf: fallback)
+            }
+            return taken
+        }
+    }
+
+    private func makeRuntimeAttachments(from attachments: [AgentSessionAttachment]) -> [AgentRuntimeAttachment] {
+        attachments.compactMap { attachment in
+            guard let data = try? Data(contentsOf: attachment.url) else { return nil }
+            guard FileTransferLimits.isValidPayload(data.count) else { return nil }
+            let mime = MimeType(attachment.mimeType) ?? .octetStream
+            guard mime.isAllowed else { return nil }
+            return AgentRuntimeAttachment(data: data, fileName: attachment.fileName, mimeType: attachment.mimeType)
         }
     }
 
@@ -3227,32 +3548,278 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     private func handleAgentRequest(_ request: AgentRequestPacket, from peerID: PeerID) {
         guard let localInfo = agentConfig.info else { return }
         let requestedRole = request.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sessionID = normalizeSessionID(request.sessionID ?? UUID().uuidString)
+        let trimmedAlias = request.senderAlias?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let senderAlias = (trimmedAlias?.isEmpty == false) ? trimmedAlias! : "anon-\(UUID().uuidString.prefix(8))"
+        let session = ensureAgentSession(
+            peerID: peerID,
+            sessionID: sessionID,
+            role: request.role,
+            peerNickname: senderAlias,
+            senderAlias: senderAlias
+        )
+        let senderName = session.peerNickname
+        AgentMeshLogger.log(.requestReceived(requestID: request.requestID, role: request.role, peerID: peerID))
+        addAgentRequestDM(
+            requestID: request.requestID,
+            role: request.role,
+            prompt: request.prompt,
+            peerID: session.threadID,
+            peerNickname: senderName,
+            outgoing: false
+        )
+        selectedPrivateChatPeer = session.threadID
+        appendAgentSessionHistory(sessionID: session.sessionID, role: "user", content: request.prompt)
+        let updatedSession = resolveAgentSession(for: session.threadID) ?? session
         if localInfo.normalizedRole != requestedRole {
             let response = AgentResponsePacket(
                 requestID: request.requestID,
                 content: "role mismatch (expected \(localInfo.role))",
+                isError: true,
+                sessionID: session.sessionID,
+                chunkIndex: nil,
+                chunkTotal: nil
+            )
+            addAgentResponseDM(
+                requestID: response.requestID,
+                role: localInfo.role,
+                content: response.content,
+                peerID: session.threadID,
+                peerNickname: senderName,
+                outgoing: true,
                 isError: true
             )
-            meshService.sendAgentResponse(response, to: peerID)
+            sendAgentResponseChunks(response, to: peerID)
+            AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: true))
             return
         }
 
-        Task { [weak self, agentRuntime, localInfo] in
-            let response = await agentRuntime.run(request: request, from: peerID, localInfo: localInfo)
+        let requestWithSession = AgentRequestPacket(
+            requestID: request.requestID,
+            role: request.role,
+            prompt: request.prompt,
+            sessionID: session.sessionID,
+            attachmentCount: request.attachmentCount,
+            senderAlias: senderAlias
+        )
+        Task { [weak self, agentRuntime, localInfo, updatedSession] in
+            let expected = Int(request.attachmentCount ?? 0)
+            let requestStart = Date().addingTimeInterval(-(self?.agentAttachmentLookbackSeconds ?? 0))
+            let pendingAttachments = expected > 0
+                ? await self?.awaitAgentAttachments(
+                    sessionID: updatedSession.sessionID,
+                    peerID: peerID,
+                    expected: expected,
+                    since: requestStart
+                ) ?? []
+                : []
+            if expected > 0, pendingAttachments.count < expected {
+                await MainActor.run {
+                    let message = "missing attachments (\(pendingAttachments.count)/\(expected)); please retry"
+                    let response = AgentResponsePacket(
+                        requestID: request.requestID,
+                        content: message,
+                        isError: true,
+                        sessionID: updatedSession.sessionID,
+                        chunkIndex: nil,
+                        chunkTotal: nil
+                    )
+                    self?.addAgentResponseDM(
+                        requestID: response.requestID,
+                        role: localInfo.role,
+                        content: message,
+                        peerID: updatedSession.threadID,
+                        peerNickname: senderName,
+                        outgoing: true,
+                        isError: true
+                    )
+                    self?.sendAgentResponseChunks(response, to: peerID)
+                    AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: true))
+                }
+                return
+            }
+
+            let runtimeAttachments = self?.makeRuntimeAttachments(from: pendingAttachments) ?? []
+            let result = await agentRuntime.run(request: requestWithSession, from: peerID, localInfo: localInfo, session: updatedSession, attachments: runtimeAttachments)
             await MainActor.run {
-                self?.meshService.sendAgentResponse(response, to: peerID)
+                let role = localInfo.role
+                self?.appendAgentSessionHistory(sessionID: updatedSession.sessionID, role: "assistant", content: result.response.content)
+                self?.addAgentResponseDM(
+                    requestID: result.response.requestID,
+                    role: role,
+                    content: result.response.content,
+                    peerID: updatedSession.threadID,
+                    peerNickname: senderName,
+                    outgoing: true,
+                    isError: result.response.isError
+                )
+                self?.sendAgentResponseChunks(result.response, to: peerID)
+                self?.sendAgentAttachments(result.attachments, session: updatedSession)
+                AgentMeshLogger.log(.responseSent(requestID: result.response.requestID, peerID: peerID, isError: result.response.isError))
             }
         }
     }
 
     @MainActor
     private func handleAgentResponse(_ response: AgentResponsePacket, from peerID: PeerID) {
-        let context = pendingAgentRequests.removeValue(forKey: response.requestID)
-        let agentName = unifiedPeerService.getPeer(by: peerID)?.nickname ?? "agent"
+        let context = pendingAgentRequests[response.requestID]
+        let agentName: String = {
+            if let name = context?.targetNickname {
+                return name
+            }
+            if let sessionID = response.sessionID,
+               let thread = agentThreadsBySessionID[sessionID],
+               let session = agentSessionsByThread[thread] {
+                return session.peerNickname
+            }
+            return unifiedPeerService.getPeer(by: peerID)?.nickname ?? "agent"
+        }()
         let role = context?.role ?? unifiedPeerService.getPeer(by: peerID)?.agentInfo?.role ?? "agent"
-        let statusPrefix = response.isError ? "agent error" : "agent"
-        let text = "[\(statusPrefix) \(role) @\(agentName)] \(response.content)"
-        addMeshOnlySystemMessage(text)
+        let sessionID = response.sessionID ?? context?.sessionID
+        let retryKey = agentResponseTimeoutKey(requestID: response.requestID, sessionID: sessionID)
+        agentResponseRetries.remove(retryKey)
+        let threadID = context?.threadID ?? {
+            guard let sessionID else { return peerID }
+            let session = ensureAgentSession(peerID: peerID, sessionID: sessionID, role: role, peerNickname: agentName)
+            return session.threadID
+        }()
+
+        if let chunkIndex = response.chunkIndex, let chunkTotal = response.chunkTotal {
+            if let assembled = agentResponseAssembler.append(
+                requestID: response.requestID,
+                sessionID: sessionID,
+                chunkIndex: Int(chunkIndex),
+                chunkTotal: Int(chunkTotal),
+                content: response.content,
+                isError: response.isError
+            ) {
+                cancelAgentResponseTimeout(requestID: response.requestID, sessionID: sessionID)
+                _ = pendingAgentRequests.removeValue(forKey: response.requestID)
+                addAgentResponseDM(
+                    requestID: response.requestID,
+                    role: role,
+                    content: assembled.content,
+                    peerID: threadID,
+                    peerNickname: agentName,
+                    outgoing: false,
+                    isError: assembled.isError
+                )
+                AgentMeshLogger.log(.responseReceived(requestID: response.requestID, peerID: peerID, isError: assembled.isError))
+            } else {
+                scheduleAgentResponseTimeout(
+                    requestID: response.requestID,
+                    sessionID: sessionID,
+                    role: role,
+                    agentName: agentName,
+                    threadID: threadID
+                )
+            }
+            return
+        }
+
+        cancelAgentResponseTimeout(requestID: response.requestID, sessionID: sessionID)
+        _ = pendingAgentRequests.removeValue(forKey: response.requestID)
+        addAgentResponseDM(
+            requestID: response.requestID,
+            role: role,
+            content: response.content,
+            peerID: threadID,
+            peerNickname: agentName,
+            outgoing: false,
+            isError: response.isError
+        )
+        AgentMeshLogger.log(.responseReceived(requestID: response.requestID, peerID: peerID, isError: response.isError))
+    }
+
+    private func agentResponseTimeoutKey(requestID: String, sessionID: String?) -> String {
+        if let sessionID {
+            return "\(requestID)|\(sessionID)"
+        }
+        return requestID
+    }
+
+    @MainActor
+    private func scheduleAgentResponseTimeout(requestID: String, sessionID: String?, role: String, agentName: String, threadID: PeerID) {
+        let key = agentResponseTimeoutKey(requestID: requestID, sessionID: sessionID)
+        guard agentResponseTimeouts[key] == nil else { return }
+        let timer = Timer.scheduledTimer(withTimeInterval: AgentMeshConstants.agentResponseAssemblyTimeoutSeconds, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.agentResponseTimeouts.removeValue(forKey: key)
+                if let flushed = self.agentResponseAssembler.flushIfExpired(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    timeout: AgentMeshConstants.agentResponseAssemblyTimeoutSeconds
+                ) {
+                    let logPeerID = self.pendingAgentRequests[requestID]?.targetPeerID ?? threadID
+                    _ = self.pendingAgentRequests.removeValue(forKey: requestID)
+                    let content = "(partial response; received \(flushed.received)/\(flushed.total) chunks)\n\n\(flushed.content)"
+                    self.addAgentResponseDM(
+                        requestID: requestID,
+                        role: role,
+                        content: content,
+                        peerID: threadID,
+                        peerNickname: agentName,
+                        outgoing: false,
+                        isError: true
+                    )
+                    AgentMeshLogger.log(.responseReceived(requestID: requestID, peerID: logPeerID, isError: true))
+                } else {
+                    self.retryAgentResponseIfNeeded(requestID: requestID, sessionID: sessionID, threadID: threadID)
+                }
+            }
+        }
+        agentResponseTimeouts[key] = timer
+    }
+
+    @MainActor
+    private func retryAgentResponseIfNeeded(requestID: String, sessionID: String?, threadID: PeerID) {
+        let key = agentResponseTimeoutKey(requestID: requestID, sessionID: sessionID)
+        guard !agentResponseRetries.contains(key) else { return }
+        guard !hasAgentResponseMessage(requestID: requestID, in: threadID) else { return }
+        guard let context = pendingAgentRequests[requestID] else { return }
+
+        agentResponseRetries.insert(key)
+        _ = pendingAgentRequests.removeValue(forKey: requestID)
+
+        let retryRequestID = "\(requestID)-retry"
+        let retry = AgentRequestPacket(
+            requestID: retryRequestID,
+            role: context.role,
+            prompt: context.prompt,
+            sessionID: context.sessionID,
+            attachmentCount: nil,
+            senderAlias: agentSessionsByThread[context.threadID]?.senderAlias
+        )
+        pendingAgentRequests[retryRequestID] = AgentRequestContext(
+            role: context.role,
+            targetPeerID: context.targetPeerID,
+            targetNickname: context.targetNickname,
+            sessionID: context.sessionID,
+            threadID: context.threadID,
+            prompt: context.prompt,
+            sentAt: Date()
+        )
+
+        addLocalPrivateSystemMessage("retrying agent response...", to: threadID)
+        meshService.sendAgentRequest(retry, to: context.targetPeerID)
+        AgentMeshLogger.log(.requestSent(requestID: retryRequestID, role: context.role, peerID: context.targetPeerID))
+    }
+
+    private func hasAgentResponseMessage(requestID: String, in threadID: PeerID) -> Bool {
+        guard let messages = privateChats[threadID] else { return false }
+        let prefix = "agent-resp-"
+        return messages.contains { msg in
+            msg.id.hasPrefix(prefix) && msg.id.hasSuffix(requestID)
+        }
+    }
+
+    @MainActor
+    private func cancelAgentResponseTimeout(requestID: String, sessionID: String?) {
+        let key = agentResponseTimeoutKey(requestID: requestID, sessionID: sessionID)
+        if let timer = agentResponseTimeouts.removeValue(forKey: key) {
+            timer.invalidate()
+        }
     }
 
     func didReceivePublicMessage(from peerID: PeerID, nickname: String, content: String, timestamp: Date, messageID: String?) {
@@ -3794,15 +4361,46 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             let nickname = String(trimmedRole.dropFirst()).lowercased()
             if let peer = allPeers.first(where: { $0.nickname.lowercased() == nickname }) {
                 let requestID = UUID().uuidString
-                let request = AgentRequestPacket(requestID: requestID, role: "direct", prompt: trimmedPrompt)
+                let alias = "anon-\(UUID().uuidString.prefix(8))"
+                let session = startAgentSession(peerID: peer.peerID, role: "direct", peerNickname: alias)
+                let draftAttachments = pendingAgentDraftAttachments
+                pendingAgentDraftAttachments = []
+                let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
+                let request = AgentRequestPacket(
+                    requestID: requestID,
+                    role: "direct",
+                    prompt: trimmedPrompt,
+                    sessionID: session.sessionID,
+                    attachmentCount: attachmentCount,
+                    senderAlias: session.senderAlias
+                )
                 pendingAgentRequests[requestID] = AgentRequestContext(
                     role: "direct",
                     targetPeerID: peer.peerID,
-                    targetNickname: peer.nickname,
+                    targetNickname: session.peerNickname,
+                    sessionID: session.sessionID,
+                    threadID: session.threadID,
+                    prompt: trimmedPrompt,
                     sentAt: Date()
                 )
+                addAgentRequestDM(
+                    requestID: requestID,
+                    role: "direct",
+                    prompt: trimmedPrompt,
+                    peerID: session.threadID,
+                    peerNickname: session.peerNickname,
+                    outgoing: true
+                )
+                selectedPrivateChatPeer = session.threadID
                 meshService.sendAgentRequest(request, to: peer.peerID)
-                return .success(message: "sent to @\(peer.nickname)")
+                if !draftAttachments.isEmpty {
+                    let delay = max(0.2, 0.2 * Double(draftAttachments.count))
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        self?.sendDraftAttachments(draftAttachments, threadPeer: session.threadID, targetPeer: session.peerID, contextID: session.sessionID)
+                    }
+                }
+                AgentMeshLogger.log(.requestSent(requestID: requestID, role: "direct", peerID: peer.peerID))
+                return .success(message: nil)
             }
             return .error(message: "agent '@\(nickname)' not found")
         }
@@ -3820,16 +4418,46 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         let requestID = UUID().uuidString
         let requestRole = allowAnyRole ? (target.agentInfo?.role ?? normalizedRole) : normalizedRole
-        let request = AgentRequestPacket(requestID: requestID, role: requestRole, prompt: trimmedPrompt)
+        let alias = "anon-\(UUID().uuidString.prefix(8))"
+        let session = startAgentSession(peerID: target.peerID, role: requestRole, peerNickname: alias)
+        let draftAttachments = pendingAgentDraftAttachments
+        pendingAgentDraftAttachments = []
+        let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
+        let request = AgentRequestPacket(
+            requestID: requestID,
+            role: requestRole,
+            prompt: trimmedPrompt,
+            sessionID: session.sessionID,
+            attachmentCount: attachmentCount,
+            senderAlias: session.senderAlias
+        )
         pendingAgentRequests[requestID] = AgentRequestContext(
             role: requestRole,
             targetPeerID: target.peerID,
-            targetNickname: target.nickname,
+            targetNickname: session.peerNickname,
+            sessionID: session.sessionID,
+            threadID: session.threadID,
+            prompt: trimmedPrompt,
             sentAt: Date()
         )
+        addAgentRequestDM(
+            requestID: requestID,
+            role: requestRole,
+            prompt: trimmedPrompt,
+            peerID: session.threadID,
+            peerNickname: session.peerNickname,
+            outgoing: true
+        )
+        selectedPrivateChatPeer = session.threadID
         meshService.sendAgentRequest(request, to: target.peerID)
-        let modelLabel = target.agentInfo?.modelId ?? "agent"
-        return .success(message: "sent to \(target.nickname) (\(modelLabel))")
+        if !draftAttachments.isEmpty {
+            let delay = max(0.2, 0.2 * Double(draftAttachments.count))
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.sendDraftAttachments(draftAttachments, threadPeer: session.threadID, targetPeer: session.peerID, contextID: session.sessionID)
+            }
+        }
+        AgentMeshLogger.log(.requestSent(requestID: requestID, role: requestRole, peerID: target.peerID))
+        return .success(message: nil)
     }
 
     private func agentSort(_ lhs: BitchatPeer, _ rhs: BitchatPeer) -> Bool {

@@ -15,6 +15,7 @@ struct BitchatFilePacket {
     var fileName: String?
     var fileSize: UInt64?
     var mimeType: String?
+    var contextID: String?
     var content: Data
 
     /// Canonical TLV tags defined by the Android implementation.
@@ -23,6 +24,7 @@ struct BitchatFilePacket {
         case fileSize = 0x02
         case mimeType = 0x03
         case content = 0x04
+        case contextID = 0x05
     }
 
     /// Encodes the packet using v2 canonical TLVs (4-byte FILE_SIZE, 4-byte CONTENT length).
@@ -57,6 +59,12 @@ struct BitchatFilePacket {
             encoded.append(mimeData)
         }
 
+        if let contextID, let ctxData = contextID.data(using: .utf8), ctxData.count <= Int(UInt16.max) {
+            encoded.append(TLVType.contextID.rawValue)
+            appendBE(UInt16(ctxData.count), into: &encoded)
+            encoded.append(ctxData)
+        }
+
         encoded.append(TLVType.content.rawValue)
         appendBE(UInt32(content.count), into: &encoded)
         encoded.append(content)
@@ -72,6 +80,7 @@ struct BitchatFilePacket {
         var fileName: String?
         var fileSize: UInt64?
         var mimeType: String?
+        var contextID: String?
         var content = Data()
 
         while cursor < end {
@@ -132,6 +141,8 @@ struct BitchatFilePacket {
                 }
             case .mimeType:
                 mimeType = String(data: Data(value), encoding: .utf8)
+            case .contextID:
+                contextID = String(data: Data(value), encoding: .utf8)
             case .content:
                 let proposedSize = content.count + value.count
                 if proposedSize > FileTransferLimits.maxPayloadBytes {
@@ -149,6 +160,7 @@ struct BitchatFilePacket {
             fileName: fileName,
             fileSize: fileSize ?? UInt64(content.count),
             mimeType: mimeType,
+            contextID: contextID,
             content: content
         )
     }

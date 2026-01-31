@@ -15,6 +15,7 @@ final class AutocompleteService {
     
     private let commands = [
         "/agent", "/agentconfig", "/agentset", "/agenton", "/agentoff", "/agentquality",
+        "/agentruntime", "/agentgateway", "/agenttoken", "/agenttimeout",
         "/msg", "/who", "/clear",
         "/hug", "/slap", "/fav", "/unfav",
         "/block", "/unblock"
@@ -96,7 +97,7 @@ final class AutocompleteService {
     
     private func needsArgument(command: String) -> Bool {
         switch command {
-        case "/who", "/clear":
+        case "/who", "/clear", "/agentconfig", "/agenton", "/agentoff":
             return false
         default:
             return true

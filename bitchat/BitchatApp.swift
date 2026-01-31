@@ -13,7 +13,13 @@ import UserNotifications
 @main
 struct BitchatApp: App {
     static let bundleID = Bundle.main.bundleIdentifier ?? "chat.bitchat"
-    static let groupID = "group.\(bundleID)"
+    static let groupID: String = {
+        if let id = Bundle.main.object(forInfoDictionaryKey: "AppGroupID") as? String,
+           !id.isEmpty {
+            return id
+        }
+        return "group.\(bundleID)"
+    }()
     
     @StateObject private var chatViewModel: ChatViewModel
     #if os(iOS)

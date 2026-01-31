@@ -32,6 +32,7 @@ protocol CommandContextProvider: AnyObject {
     var privateChats: [PeerID: [BitchatMessage]] { get set }
     var idBridge: NostrIdentityBridge { get }
     var agentConfig: AgentConfig { get }
+    var agentRuntimeStatus: AgentRuntimeStatus { get }
 
     // MARK: - Peer Lookup
     func getPeerIDForNickname(_ nickname: String) -> PeerID?
@@ -103,6 +104,14 @@ final class CommandProcessor {
             return handleAgentToggle(enabled: false)
         case "/agentquality":
             return handleAgentQuality(args)
+        case "/agentruntime":
+            return handleAgentRuntime(args)
+        case "/agentgateway":
+            return handleAgentGateway(args)
+        case "/agenttoken":
+            return handleAgentToken(args)
+        case "/agenttimeout":
+            return handleAgentTimeout(args)
         case "/hug":
             return handleEmote(args, command: "hug", action: "hugs", emoji: "🫂")
         case "/slap":
@@ -199,7 +208,20 @@ final class CommandProcessor {
         let config = ctx.agentConfig
         let status = config.enabled ? "on" : "off"
         let hash = config.modelHash?.isEmpty == false ? " hash=\(config.modelHash!)" : ""
-        let message = "agent \(status): role=\(config.role) model=\(config.modelId) quality=\(config.qualityScore)\(hash)"
+        var runtime = "runtime=\(config.runtime.mode.rawValue) timeout=\(config.runtime.timeoutSeconds)s"
+        if config.runtime.mode == .gateway {
+            let tokenStatus = (config.runtime.gatewayToken?.isEmpty == false) ? "token=set" : "token=unset"
+            runtime += " url=\(config.runtime.gatewayURL) \(tokenStatus)"
+            let health = ctx.agentRuntimeStatus
+            if let err = health.lastGatewayError {
+                runtime += " gateway=error(\(err))"
+            } else if health.lastGatewaySuccessAt != nil {
+                runtime += " gateway=ok"
+            } else {
+                runtime += " gateway=unknown"
+            }
+        }
+        let message = "agent \(status): role=\(config.role) model=\(config.modelId) quality=\(config.qualityScore)\(hash) \(runtime)"
         return .success(message: message)
     }
 
@@ -242,6 +264,59 @@ final class CommandProcessor {
         next.qualityScore = q
         ctx.updateAgentConfig(next)
         return .success(message: "agent quality set to \(q)")
+    }
+
+    private func handleAgentRuntime(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "echo" || trimmed == "gateway" else {
+            return .error(message: "usage: /agentruntime <echo|gateway>")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.runtime.mode = trimmed == "gateway" ? .gateway : .echo
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent runtime set to \(next.runtime.mode.rawValue)")
+    }
+
+    private func handleAgentGateway(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .error(message: "usage: /agentgateway <url>")
+        }
+        guard let url = URL(string: trimmed), url.scheme?.hasPrefix("http") == true else {
+            return .error(message: "invalid gateway url")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.runtime.gatewayURL = trimmed
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent gateway set")
+    }
+
+    private func handleAgentToken(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        if trimmed.isEmpty {
+            next.runtime.gatewayToken = nil
+            ctx.updateAgentConfig(next)
+            return .success(message: "agent token cleared")
+        }
+        next.runtime.gatewayToken = trimmed
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent token set")
+    }
+
+    private func handleAgentTimeout(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let seconds = UInt32(trimmed), seconds > 0, seconds <= 300 else {
+            return .error(message: "usage: /agenttimeout <seconds 1-300>")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.runtime.timeoutSeconds = seconds
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent timeout set to \(seconds)s")
     }
     
     private func handleEmote(_ args: String, command: String, action: String, emoji: String, suffix: String = "") -> CommandResult {

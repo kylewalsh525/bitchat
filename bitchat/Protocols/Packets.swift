@@ -14,7 +14,6 @@ struct AnnouncementPacket {
         case noisePublicKey = 0x02
         case signingPublicKey = 0x03
         case directNeighbors = 0x04
-        case agentInfo = 0x05
     }
 
     func encode() -> Data? {
@@ -53,8 +52,8 @@ struct AnnouncementPacket {
         // TLV for agent info (optional)
         if let agentInfo {
             let agentData = encodeAgentInfo(agentInfo)
-            if agentData.count <= 255 {
-                data.append(TLVType.agentInfo.rawValue)
+            if agentData.count <= AgentMeshConstants.maxTLVStringBytes {
+                data.append(AgentMeshTLV.agentInfo.rawValue)
                 data.append(UInt8(agentData.count))
                 data.append(agentData)
             }
@@ -100,10 +99,11 @@ struct AnnouncementPacket {
                         }
                         directNeighbors = neighbors
                     }
-                case .agentInfo:
-                    agentInfo = decodeAgentInfo(Data(value))
                 }
             } else {
+                if typeRaw == AgentMeshTLV.agentInfo.rawValue {
+                    agentInfo = decodeAgentInfo(Data(value))
+                }
                 // Unknown TLV; skip (tolerant decoder for forward compatibility)
                 continue
             }
@@ -120,31 +120,31 @@ struct AnnouncementPacket {
     }
 }
 
-private func encodeAgentInfo(_ info: AgentInfo) -> Data {
+func encodeAgentInfo(_ info: AgentInfo) -> Data {
     var data = Data()
     // Simple versioned layout:
     // [version:1][roleLen:1][role][modelLen:1][model][quality:1][hashLen:1][hash]
-    data.append(0x01)
+    data.append(AgentMeshConstants.agentInfoVersion)
     let roleData = info.role.data(using: .utf8) ?? Data()
     let modelData = info.modelId.data(using: .utf8) ?? Data()
     let hashData = info.modelHash?.data(using: .utf8) ?? Data()
 
-    data.append(UInt8(min(roleData.count, 255)))
-    data.append(roleData.prefix(255))
-    data.append(UInt8(min(modelData.count, 255)))
-    data.append(modelData.prefix(255))
+    data.append(UInt8(min(roleData.count, AgentMeshConstants.maxTLVStringBytes)))
+    data.append(roleData.prefix(AgentMeshConstants.maxTLVStringBytes))
+    data.append(UInt8(min(modelData.count, AgentMeshConstants.maxTLVStringBytes)))
+    data.append(modelData.prefix(AgentMeshConstants.maxTLVStringBytes))
     data.append(min(info.qualityScore, 100))
-    data.append(UInt8(min(hashData.count, 255)))
-    data.append(hashData.prefix(255))
+    data.append(UInt8(min(hashData.count, AgentMeshConstants.maxTLVStringBytes)))
+    data.append(hashData.prefix(AgentMeshConstants.maxTLVStringBytes))
     return data
 }
 
-private func decodeAgentInfo(_ data: Data) -> AgentInfo? {
+func decodeAgentInfo(_ data: Data) -> AgentInfo? {
     var offset = 0
     guard data.count >= 6 else { return nil }
     let version = data[offset]
     offset += 1
-    guard version == 0x01 else { return nil }
+    guard version == AgentMeshConstants.agentInfoVersion else { return nil }
 
     let roleLen = Int(data[offset])
     offset += 1
@@ -235,30 +235,47 @@ struct AgentRequestPacket {
     let requestID: String
     let role: String
     let prompt: String
-
-    private enum TLVType: UInt8 {
-        case requestID = 0x00
-        case role = 0x01
-        case prompt = 0x02
-    }
+    let sessionID: String?
+    let attachmentCount: UInt8?
+    let senderAlias: String?
 
     func encode() -> Data? {
         var data = Data()
-        guard let idData = requestID.data(using: .utf8), idData.count <= 255 else { return nil }
-        guard let roleData = role.data(using: .utf8), roleData.count <= 255 else { return nil }
+        guard let idData = requestID.data(using: .utf8), idData.count <= AgentMeshConstants.maxTLVStringBytes else { return nil }
+        guard let roleData = role.data(using: .utf8), roleData.count <= AgentMeshConstants.maxTLVStringBytes else { return nil }
         guard let promptData = prompt.data(using: .utf8), promptData.count <= 65535 else { return nil }
 
-        data.append(TLVType.requestID.rawValue)
+        data.append(AgentRequestTLV.requestID.rawValue)
         data.append(UInt8(idData.count))
         data.append(idData)
 
-        data.append(TLVType.role.rawValue)
+        data.append(AgentRequestTLV.role.rawValue)
         data.append(UInt8(roleData.count))
         data.append(roleData)
 
-        data.append(TLVType.prompt.rawValue)
-        data.append(UInt8(min(promptData.count, 255)))
-        data.append(promptData.prefix(255))
+        data.append(AgentRequestTLV.prompt.rawValue)
+        data.append(UInt8(min(promptData.count, AgentMeshConstants.maxTLVStringBytes)))
+        data.append(promptData.prefix(AgentMeshConstants.maxTLVStringBytes))
+
+        if let sessionID,
+           let sessionData = sessionID.data(using: .utf8),
+           sessionData.count <= AgentMeshConstants.maxTLVStringBytes {
+            data.append(AgentRequestTLV.sessionID.rawValue)
+            data.append(UInt8(sessionData.count))
+            data.append(sessionData)
+        }
+        if let attachmentCount {
+            data.append(AgentRequestTLV.attachmentCount.rawValue)
+            data.append(1)
+            data.append(attachmentCount)
+        }
+        if let senderAlias,
+           let aliasData = senderAlias.data(using: .utf8),
+           aliasData.count <= AgentMeshConstants.maxTLVStringBytes {
+            data.append(AgentRequestTLV.senderAlias.rawValue)
+            data.append(UInt8(aliasData.count))
+            data.append(aliasData)
+        }
         return data
     }
 
@@ -267,9 +284,12 @@ struct AgentRequestPacket {
         var requestID: String?
         var role: String?
         var prompt: String?
+        var sessionID: String?
+        var attachmentCount: UInt8?
+        var senderAlias: String?
 
         while offset + 2 <= data.count {
-            guard let type = TLVType(rawValue: data[offset]) else { return nil }
+            let typeByte = data[offset]
             offset += 1
             let length = Int(data[offset])
             offset += 1
@@ -277,6 +297,7 @@ struct AgentRequestPacket {
             let value = data[offset..<offset + length]
             offset += length
 
+            guard let type = AgentRequestTLV(rawValue: typeByte) else { continue }
             switch type {
             case .requestID:
                 requestID = String(data: value, encoding: .utf8)
@@ -284,11 +305,24 @@ struct AgentRequestPacket {
                 role = String(data: value, encoding: .utf8)
             case .prompt:
                 prompt = String(data: value, encoding: .utf8)
+            case .sessionID:
+                sessionID = String(data: value, encoding: .utf8)
+            case .attachmentCount:
+                attachmentCount = value.first
+            case .senderAlias:
+                senderAlias = String(data: value, encoding: .utf8)
             }
         }
 
         guard let requestID = requestID, let role = role, let prompt = prompt else { return nil }
-        return AgentRequestPacket(requestID: requestID, role: role, prompt: prompt)
+        return AgentRequestPacket(
+            requestID: requestID,
+            role: role,
+            prompt: prompt,
+            sessionID: sessionID,
+            attachmentCount: attachmentCount,
+            senderAlias: senderAlias
+        )
     }
 }
 
@@ -296,29 +330,48 @@ struct AgentResponsePacket {
     let requestID: String
     let content: String
     let isError: Bool
-
-    private enum TLVType: UInt8 {
-        case requestID = 0x00
-        case content = 0x01
-        case isError = 0x02
-    }
+    let sessionID: String?
+    let chunkIndex: UInt16?
+    let chunkTotal: UInt16?
 
     func encode() -> Data? {
         var data = Data()
-        guard let idData = requestID.data(using: .utf8), idData.count <= 255 else { return nil }
+        guard let idData = requestID.data(using: .utf8), idData.count <= AgentMeshConstants.maxTLVStringBytes else { return nil }
         guard let contentData = content.data(using: .utf8), contentData.count <= 65535 else { return nil }
 
-        data.append(TLVType.requestID.rawValue)
+        data.append(AgentResponseTLV.requestID.rawValue)
         data.append(UInt8(idData.count))
         data.append(idData)
 
-        data.append(TLVType.content.rawValue)
-        data.append(UInt8(min(contentData.count, 255)))
-        data.append(contentData.prefix(255))
+        data.append(AgentResponseTLV.content.rawValue)
+        data.append(UInt8(min(contentData.count, AgentMeshConstants.maxTLVStringBytes)))
+        data.append(contentData.prefix(AgentMeshConstants.maxTLVStringBytes))
 
-        data.append(TLVType.isError.rawValue)
+        data.append(AgentResponseTLV.isError.rawValue)
         data.append(1)
         data.append(isError ? 1 : 0)
+
+        if let sessionID,
+           let sessionData = sessionID.data(using: .utf8),
+           sessionData.count <= AgentMeshConstants.maxTLVStringBytes {
+            data.append(AgentResponseTLV.sessionID.rawValue)
+            data.append(UInt8(sessionData.count))
+            data.append(sessionData)
+        }
+
+        if let chunkIndex {
+            data.append(AgentResponseTLV.chunkIndex.rawValue)
+            data.append(2)
+            data.append(UInt8((chunkIndex >> 8) & 0xFF))
+            data.append(UInt8(chunkIndex & 0xFF))
+        }
+
+        if let chunkTotal {
+            data.append(AgentResponseTLV.chunkTotal.rawValue)
+            data.append(2)
+            data.append(UInt8((chunkTotal >> 8) & 0xFF))
+            data.append(UInt8(chunkTotal & 0xFF))
+        }
         return data
     }
 
@@ -327,9 +380,12 @@ struct AgentResponsePacket {
         var requestID: String?
         var content: String?
         var isError = false
+        var sessionID: String?
+        var chunkIndex: UInt16?
+        var chunkTotal: UInt16?
 
         while offset + 2 <= data.count {
-            guard let type = TLVType(rawValue: data[offset]) else { return nil }
+            let typeByte = data[offset]
             offset += 1
             let length = Int(data[offset])
             offset += 1
@@ -337,6 +393,7 @@ struct AgentResponsePacket {
             let value = data[offset..<offset + length]
             offset += length
 
+            guard let type = AgentResponseTLV(rawValue: typeByte) else { continue }
             switch type {
             case .requestID:
                 requestID = String(data: value, encoding: .utf8)
@@ -344,10 +401,31 @@ struct AgentResponsePacket {
                 content = String(data: value, encoding: .utf8)
             case .isError:
                 isError = value.first == 1
+            case .sessionID:
+                sessionID = String(data: value, encoding: .utf8)
+            case .chunkIndex:
+                if value.count == 2 {
+                    let hi = UInt16(value[value.startIndex])
+                    let lo = UInt16(value[value.index(after: value.startIndex)])
+                    chunkIndex = (hi << 8) | lo
+                }
+            case .chunkTotal:
+                if value.count == 2 {
+                    let hi = UInt16(value[value.startIndex])
+                    let lo = UInt16(value[value.index(after: value.startIndex)])
+                    chunkTotal = (hi << 8) | lo
+                }
             }
         }
 
         guard let requestID = requestID, let content = content else { return nil }
-        return AgentResponsePacket(requestID: requestID, content: content, isError: isError)
+        return AgentResponsePacket(
+            requestID: requestID,
+            content: content,
+            isError: isError,
+            sessionID: sessionID,
+            chunkIndex: chunkIndex,
+            chunkTotal: chunkTotal
+        )
     }
 }

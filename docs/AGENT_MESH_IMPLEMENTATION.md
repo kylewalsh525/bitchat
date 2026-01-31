@@ -8,20 +8,31 @@ extend it safely.
   - bitchat/Models/AgentInfo.swift
   - bitchat/Models/BitchatPeer.swift
   - bitchat/Models/CommandInfo.swift
+  - bitchat/Models/AgentSession.swift
 - Protocol:
   - bitchat/Protocols/BitchatProtocol.swift
   - bitchat/Protocols/Packets.swift
+  - bitchat/Protocols/AgentMeshConstants.swift
 - Transport:
   - bitchat/Services/Transport.swift
   - bitchat/Services/BLE/BLEService.swift
   - bitchat/Services/UnifiedPeerService.swift
 - Runtime:
   - bitchat/Services/AgentRuntime.swift
+  - bitchat/Services/AgentGatewayClient.swift
+  - bitchat/Services/GatewayAgentRuntime.swift
+  - bitchat/Services/AgentMeshFeatureFlags.swift
+  - bitchat/Services/AgentMeshLogger.swift
+  - bitchat/Services/AgentMeshChunker.swift
+  - bitchat/Services/AgentResponseAssembler.swift
 - ViewModel:
   - bitchat/ViewModels/ChatViewModel.swift
+  - bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshUI.swift
+  - bitchat/ViewModels/Extensions/ChatViewModel+AgentSessions.swift
 - UI:
   - bitchat/Views/MeshPeerList.swift
   - bitchat/Services/AutocompleteService.swift
+  - bitchat/Models/AgentRuntimeStatus.swift
 
 ## Discovery Flow
 1) Local agent config is loaded from UserDefaults (bitchat.agent.config).
@@ -46,8 +57,9 @@ flowchart LR
 2) CommandProcessor calls ChatViewModel.dispatchAgentRequest().
 3) ChatViewModel filters peers with agentInfo and matches role.
 4) It prefers connected peers, then reachable peers, then highest quality score.
-5) It sends AgentRequestPacket via Transport.sendAgentRequest().
-6) BLEService wraps packet into Noise payload type agentRequest and sends it.
+5) It appends a local DM message for the request.
+6) It sends AgentRequestPacket via Transport.sendAgentRequest().
+7) BLEService wraps packet into Noise payload type agentRequest and sends it.
 
 ```mermaid
 sequenceDiagram
@@ -57,6 +69,7 @@ sequenceDiagram
   participant Peer as Agent Peer
   UI->>VM: /agent <role> <prompt>
   VM->>VM: select best peer
+  VM->>VM: append DM request (local)
   VM->>BLE: sendAgentRequest()
   BLE->>Peer: Noise payload (agentRequest)
 ```
@@ -64,9 +77,10 @@ sequenceDiagram
 ## Response Flow
 1) Agent device receives Noise payload type agentRequest.
 2) ChatViewModel.handleAgentRequest() validates role match.
-3) AgentRuntime.run() produces an AgentResponsePacket.
-4) BLEService sends agentResponse payload back over the mesh.
-5) ChatViewModel.handleAgentResponse() renders a system message in mesh timeline.
+3) AgentRuntime.run() produces an AgentResponsePacket + attachments.
+4) BLEService sends agentResponse payloads back over the mesh (chunked if needed).
+5) ChatViewModel.handleAgentResponse() reassembles chunks and renders a DM message in the agent thread.
+6) Attachments are sent as file transfers with contextID = sessionID.
 
 ```mermaid
 sequenceDiagram
@@ -75,6 +89,7 @@ sequenceDiagram
   participant VM as ChatViewModel
   Peer->>VM: agentRequest (Noise)
   VM->>VM: AgentRuntime.run()
+  VM->>VM: append DM response (local)
   VM->>BLE: sendAgentResponse()
   BLE->>Peer: Noise payload (agentResponse)
 ```
@@ -85,10 +100,14 @@ sequenceDiagram
 - /agentset <role> <model> [quality] [hash]
 - /agenton /agentoff
 - /agentquality <0-100>
+- /agentruntime <echo|gateway>
+- /agentgateway <url>
+- /agenttoken <token>
+- /agenttimeout <seconds>
 
 ## Known Limits (Current)
-- request/response TLVs cap content to 255 bytes.
-- no streaming; single-shot responses only.
+- request TLVs cap prompt to 255 bytes.
+- responses are chunked into 255-byte TLVs and reassembled.
 - no request timeout or retry.
 
 ## Extension Points
@@ -115,7 +134,7 @@ If future transport(s) are added, implement:
 - Two devices:
   - Agent device advertises role.
   - Caller sends /agent role prompt.
-  - Response appears in mesh timeline.
+  - Request + response appear in the private DM thread (not mesh timeline).
 
 ## Debugging Tips
 - Announce payloads are signed; unverified announces are ignored.

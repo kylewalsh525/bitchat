@@ -6,7 +6,7 @@ announce TLVs and Noise payloads. All values are best-effort and may evolve.
 ## Compatibility and Versioning
 - The agent TLV is optional and ignored by older clients.
 - Unknown TLVs are skipped (tolerant decoder).
-- AgentInfo blob includes a version byte for forward compatibility.
+- AgentInfo blob includes a version byte for forward compatibility (see `AgentMeshConstants.agentInfoVersion`).
 
 ## Announcement TLV: agentInfo (0x05)
 ### Purpose
@@ -58,6 +58,7 @@ Send a single-shot agent request to a peer.
 - requestID (type 0x00): string
 - role (type 0x01): string
 - prompt (type 0x02): string
+- sessionID (type 0x03): string (optional)
 
 ### Limits
 - Each TLV value is capped to 255 bytes.
@@ -71,9 +72,13 @@ Return a single-shot agent response to the requester.
 - requestID (type 0x00): string
 - content (type 0x01): string
 - isError (type 0x02): bool (1 byte, 0/1)
+- sessionID (type 0x03): string (optional)
+- chunkIndex (type 0x04): uint16 (optional, 1-based)
+- chunkTotal (type 0x05): uint16 (optional)
 
 ### Limits
-- content is capped to 255 bytes.
+- content is capped to 255 bytes per chunk.
+- If chunkIndex/chunkTotal are present, multiple responses are sent and reassembled.
 
 ## Routing Constraints
 - Request/response payloads are Noise-encrypted.
@@ -81,6 +86,6 @@ Return a single-shot agent response to the requester.
 - No payment metadata yet (planned extension).
 
 ## Reserved Extensions (Planned)
-- Streaming response chunks (new Noise payload type or chunk TLV).
+- Payment metadata (invoice or address).
 - Payment metadata (invoice or address).
 - Trust attestations and quality proofs.

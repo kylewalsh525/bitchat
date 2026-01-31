@@ -13,7 +13,7 @@ Docs index:
 ## Status
 - Experimental. Subject to protocol changes.
 - Command-only configuration; no UI settings panel yet.
-- Local agent runtime is a stub (echo), with defined integration points for LLMs.
+- Local agent runtime supports echo or an HTTP gateway, with defined integration points for LLMs.
 
 ## Goals
 - Allow discovery of agent-capable peers on the Bluetooth mesh.
@@ -33,7 +33,7 @@ Docs index:
    - /agentconfig
 2) From another device on the mesh:
    - /agent <role> <prompt>
-3) Observe the response as a system message in mesh timeline.
+3) Observe the request + response in the private DM thread with the agent.
 
 ## High-Level Architecture
 - Discovery:
@@ -64,7 +64,7 @@ flowchart LR
 4) Agent device receives agentRequest Noise payload.
 5) AgentRuntime produces response content.
 6) Agent device sends AgentResponsePacket back over mesh.
-7) Caller displays response in mesh timeline as a system message.
+7) Caller displays response in the private DM thread.
 
 ```mermaid
 sequenceDiagram
@@ -75,7 +75,7 @@ sequenceDiagram
     C->>A: Noise payload: agentRequest
     A->>A: AgentRuntime.run()
     A->>C: Noise payload: agentResponse
-    C->>C: Render system message
+    C->>C: Render DM message
 ```
 
 ## Config Surface (Current)
@@ -85,6 +85,11 @@ Slash commands:
 - /agentset <role> <model> [quality] [hash]
 - /agenton / /agentoff
 - /agentquality <0-100>
+- /agentruntime <echo|gateway>
+- /agentgateway <url>
+- /agenttoken <token>
+- /agenttimeout <seconds>
+- /agenttimeout <seconds>
 
 Persistence:
 - UserDefaults key: bitchat.agent.config

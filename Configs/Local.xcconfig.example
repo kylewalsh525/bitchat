@@ -2,4 +2,12 @@
 DEVELOPMENT_TEAM = ABC123
 
 // Unique bundle id to be able to register and run locally
-PRODUCT_BUNDLE_IDENTIFIER = chat.bitchat.$(DEVELOPMENT_TEAM)
+APP_BUNDLE_ID = chat.bitchat.$(DEVELOPMENT_TEAM)
+PRODUCT_BUNDLE_IDENTIFIER = $(APP_BUNDLE_ID)
+
+// Optional: disable app groups for quick local builds (share extension won't work)
+// USE_APP_GROUPS = NO
+
+// If you have App Groups enabled on your team, create this group in the dev portal
+// and keep it in sync with your entitlements.
+APP_GROUP_ID = group.$(APP_BUNDLE_ID)

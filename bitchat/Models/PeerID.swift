@@ -18,6 +18,8 @@ struct PeerID: Equatable, Hashable {
         case name = "name:"
         /// `"noise:"` (+ 64 characters hex)
         case noise = "noise:"
+        /// `"agent:"` (+ session id)
+        case agent = "agent:"
         /// `"nostr_"` (+ 16 characters hex)
         case geoDM = "nostr_"
         /// `"nostr:"` (+ 8 characters hex)
@@ -42,6 +44,11 @@ struct PeerID: Equatable, Hashable {
 // MARK: - Convenience Inits
 
 extension PeerID {
+    /// Convenience init to create Agent Session PeerID
+    init(agentSessionID: String) {
+        self.init(prefix: .agent, bare: agentSessionID)
+    }
+
     /// Convenience init to create GeoDM PeerID by appending `"nostr_"` to the first 16 characters of `pubKey`
     init(nostr_ pubKey: String) {
         self.init(prefix: .geoDM, bare: pubKey.prefix(TransportConfig.nostrConvKeyPrefixLength))
@@ -129,6 +136,11 @@ extension PeerID {
     /// Returns true if `id` starts with "`nostr_`"
     var isGeoDM: Bool {
         prefix == .geoDM
+    }
+
+    /// Returns true if `id` starts with "`agent:`"
+    var isAgentSession: Bool {
+        prefix == .agent
     }
     
     func toPercentEncoded() -> String {

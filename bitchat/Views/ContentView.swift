@@ -217,7 +217,7 @@ struct ContentView: View {
                         do {
                             let processedURL = try ImageUtils.processImage(image)
                             await MainActor.run {
-                                viewModel.sendImage(from: processedURL)
+                                viewModel.queueDraftImage(url: processedURL, for: viewModel.selectedPrivateChatPeer)
                             }
                         } catch {
                             SecureLogger.error("Image processing failed: \(error)", category: .session)
@@ -246,7 +246,7 @@ struct ContentView: View {
                         do {
                             let processedURL = try ImageUtils.processImage(at: url)
                             await MainActor.run {
-                                viewModel.sendImage(from: processedURL)
+                                viewModel.queueDraftImage(url: processedURL, for: viewModel.selectedPrivateChatPeer)
                             }
                         } catch {
                             SecureLogger.error("Image processing failed: \(error)", category: .session)
@@ -441,7 +441,7 @@ struct ContentView: View {
                 if privatePeer == nil && !viewModel.messages.isEmpty {
                     // If the newest message is from me, always scroll to bottom
                     let lastMsg = viewModel.messages.last!
-                    let isFromSelf = (lastMsg.sender == viewModel.nickname) || lastMsg.sender.hasPrefix(viewModel.nickname + "#")
+                    let isFromSelf = viewModel.isSelfMessage(lastMsg)
                     if !isFromSelf {
                         // Only autoscroll when user is at/near bottom
                         guard isAtBottom.wrappedValue else { return }
@@ -491,7 +491,7 @@ struct ContentView: View {
                    !messages.isEmpty {
                     // If the newest private message is from me, always scroll
                     let lastMsg = messages.last!
-                    let isFromSelf = (lastMsg.sender == viewModel.nickname) || lastMsg.sender.hasPrefix(viewModel.nickname + "#")
+                    let isFromSelf = viewModel.isSelfMessage(lastMsg)
                     if !isFromSelf {
                         // Only autoscroll when user is at/near bottom
                         guard isAtBottom.wrappedValue else { return }
@@ -575,6 +575,8 @@ struct ContentView: View {
 
     @ViewBuilder
     private var inputView: some View {
+        let isReadOnly = viewModel.isAgentSessionReadOnly
+        let draftAttachments = viewModel.draftAttachments(for: viewModel.selectedPrivateChatPeer)
         VStack(alignment: .leading, spacing: 6) {
             // @mentions autocomplete
             if viewModel.showAutocomplete && !viewModel.autocompleteSuggestions.isEmpty {
@@ -618,12 +620,19 @@ struct ContentView: View {
                 recordingIndicator
             }
 
+            if !isReadOnly && !draftAttachments.isEmpty {
+                draftAttachmentStrip(draftAttachments)
+                    .padding(.horizontal, 6)
+            }
+
             HStack(alignment: .center, spacing: 4) {
                 TextField(
                     "",
                     text: $messageText,
                     prompt: Text(
-                        String(localized: "content.input.message_placeholder", comment: "Placeholder shown in the chat composer")
+                        isReadOnly
+                        ? "Agent DM is read-only"
+                        : String(localized: "content.input.message_placeholder", comment: "Placeholder shown in the chat composer")
                     )
                     .foregroundColor(secondaryTextColor.opacity(0.6))
                 )
@@ -653,6 +662,7 @@ struct ContentView: View {
                         }
                     }
                 }
+                .disabled(isReadOnly)
 
                 HStack(alignment: .center, spacing: 4) {
                     if shouldShowMediaControls {
@@ -661,6 +671,8 @@ struct ContentView: View {
 
                     sendOrMicButton
                 }
+                .disabled(isReadOnly)
+                .opacity(isReadOnly ? 0.6 : 1.0)
             }
         }
         .padding(.horizontal, 6)
@@ -773,9 +785,33 @@ struct ContentView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private func draftAttachmentStrip(_ attachments: [ChatViewModel.DraftAttachment]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(attachments.enumerated()), id: \.offset) { index, attachment in
+                    DraftAttachmentThumbnailView(
+                        attachment: attachment,
+                        onRemove: {
+                            viewModel.removeDraftAttachment(at: index, for: viewModel.selectedPrivateChatPeer)
+                        },
+                        onPreview: {
+                            imagePreviewURL = attachment.url
+                        }
+                    )
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(height: 72)
+    }
     // MARK: - Actions
     
     private func sendMessage() {
+        if viewModel.isAgentSessionReadOnly {
+            return
+        }
         let trimmed = trimmedMessageText
         guard !trimmed.isEmpty else { return }
 
@@ -820,7 +856,7 @@ struct ContentView: View {
                         do {
                             let processedURL = try ImageUtils.processImage(image)
                             await MainActor.run {
-                                viewModel.sendImage(from: processedURL)
+                                viewModel.queueDraftImage(url: processedURL, for: viewModel.selectedPrivateChatPeer)
                             }
                         } catch {
                             SecureLogger.error("Image processing failed: \(error)", category: .session)
@@ -841,7 +877,7 @@ struct ContentView: View {
                         do {
                             let processedURL = try ImageUtils.processImage(at: url)
                             await MainActor.run {
-                                viewModel.sendImage(from: processedURL)
+                                viewModel.queueDraftImage(url: processedURL, for: viewModel.selectedPrivateChatPeer)
                             }
                         } catch {
                             SecureLogger.error("Image processing failed: \(error)", category: .session)
@@ -1508,14 +1544,14 @@ private extension ContentView {
             let filename = String(message.content.dropFirst("[voice] ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !filename.isEmpty else { return nil }
             // Check outgoing first for sent messages, incoming for received
-            let subdir = message.sender == viewModel.nickname ? "voicenotes/outgoing" : "voicenotes/incoming"
+            let subdir = viewModel.isSelfMessage(message) ? "voicenotes/outgoing" : "voicenotes/incoming"
             let url = baseDirectory.appendingPathComponent(subdir, isDirectory: true).appendingPathComponent(filename)
             return .voice(url)
         }
         if message.content.hasPrefix("[image] ") {
             let filename = String(message.content.dropFirst("[image] ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !filename.isEmpty else { return nil }
-            let subdir = message.sender == viewModel.nickname ? "images/outgoing" : "images/incoming"
+            let subdir = viewModel.isSelfMessage(message) ? "images/outgoing" : "images/incoming"
             let url = baseDirectory.appendingPathComponent(subdir, isDirectory: true).appendingPathComponent(filename)
             return .image(url)
         }
@@ -1577,7 +1613,7 @@ private extension ContentView {
                 Text(viewModel.formatMessageHeader(message, colorScheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if message.isPrivate && message.sender == viewModel.nickname,
+                if message.isPrivate && viewModel.isSelfMessage(message),
                    let status = message.deliveryStatus {
                     DeliveryStatusView(status: status)
                         .padding(.leading, 4)
@@ -2050,6 +2086,79 @@ struct ImagePreviewView: View {
         func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
     }
 #endif
+}
+
+private struct DraftAttachmentThumbnailView: View {
+    let attachment: ChatViewModel.DraftAttachment
+    let onRemove: () -> Void
+    let onPreview: () -> Void
+
+    #if os(iOS)
+    @State private var platformImage: UIImage?
+    #else
+    @State private var platformImage: NSImage?
+    #endif
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if attachment.kind == "image", let image = platformImage {
+                    #if os(iOS)
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                    #else
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                    #endif
+                } else {
+                    ZStack {
+                        Color.gray.opacity(0.2)
+                        Image(systemName: attachment.kind == "image" ? "photo" : "doc")
+                            .font(.bitchatSystem(size: 16))
+                            .foregroundColor(.gray)
+                    }
+                }
+            }
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.black.opacity(0.1), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .onTapGesture {
+                if attachment.kind == "image" {
+                    onPreview()
+                }
+            }
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.bitchatSystem(size: 14))
+                    .foregroundColor(.white)
+                    .background(Circle().fill(Color.black.opacity(0.65)))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 6, y: -6)
+        }
+        .onAppear(perform: loadImage)
+    }
+
+    private func loadImage() {
+        guard attachment.kind == "image" else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            #if os(iOS)
+            guard let image = UIImage(contentsOfFile: attachment.url.path) else { return }
+            #else
+            guard let image = NSImage(contentsOf: attachment.url) else { return }
+            #endif
+            DispatchQueue.main.async {
+                self.platformImage = image
+            }
+        }
+    }
 }
 
 #if os(iOS)

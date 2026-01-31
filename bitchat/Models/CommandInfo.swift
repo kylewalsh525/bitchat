@@ -26,6 +26,10 @@ enum CommandInfo: String, Identifiable {
     case agenton
     case agentoff
     case agentquality
+    case agentruntime
+    case agentgateway
+    case agenttoken
+    case agenttimeout
     
     var id: String { rawValue }
     
@@ -45,6 +49,14 @@ enum CommandInfo: String, Identifiable {
             return nil
         case .agentquality:
             return "<0-100>"
+        case .agentruntime:
+            return "<echo|gateway>"
+        case .agentgateway:
+            return "<url>"
+        case .agenttoken:
+            return "<token>"
+        case .agenttimeout:
+            return "<seconds>"
         case .clear, .who:
             return nil
         }
@@ -67,12 +79,17 @@ enum CommandInfo: String, Identifiable {
         case .agenton:      "enable agent"
         case .agentoff:     "disable agent"
         case .agentquality: "set agent quality"
+        case .agentruntime: "set agent runtime"
+        case .agentgateway: "set agent gateway URL"
+        case .agenttoken:   "set agent gateway token"
+        case .agenttimeout: "set agent runtime timeout"
         }
     }
     
     static func all(isGeoPublic: Bool, isGeoDM: Bool) -> [CommandInfo] {
         let baseCommands: [CommandInfo] = [
             .agent, .agentconfig, .agentset, .agenton, .agentoff, .agentquality,
+            .agentruntime, .agentgateway, .agenttoken, .agenttimeout,
             .block, .unblock, .clear, .hug, .message, .slap, .who
         ]
         if isGeoPublic || isGeoDM {
