@@ -29,10 +29,13 @@ extend it safely.
   - bitchat/ViewModels/ChatViewModel.swift
   - bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshUI.swift
   - bitchat/ViewModels/Extensions/ChatViewModel+AgentSessions.swift
+  - bitchat/ViewModels/Extensions/ChatViewModel+PrivateChat.swift
 - UI:
   - bitchat/Views/MeshPeerList.swift
   - bitchat/Services/AutocompleteService.swift
   - bitchat/Models/AgentRuntimeStatus.swift
+  - scripts/agent_gateway_proxy.py
+  - bitchat/Models/AgentSessionAttachment.swift
 
 ## Discovery Flow
 1) Local agent config is loaded from UserDefaults (bitchat.agent.config).
@@ -59,6 +62,7 @@ flowchart LR
 4) It prefers connected peers, then reachable peers, then highest quality score.
 5) It appends a local DM message for the request.
 6) It sends AgentRequestPacket via Transport.sendAgentRequest().
+7) If attachments are queued, it includes attachmentCount and senderAlias.
 7) BLEService wraps packet into Noise payload type agentRequest and sends it.
 
 ```mermaid
@@ -81,6 +85,13 @@ sequenceDiagram
 4) BLEService sends agentResponse payloads back over the mesh (chunked if needed).
 5) ChatViewModel.handleAgentResponse() reassembles chunks and renders a DM message in the agent thread.
 6) Attachments are sent as file transfers with contextID = sessionID.
+
+## Attachment Flow
+1) User queues media in the composer (not immediately sent).
+2) `/agent` sends a request with attachmentCount and senderAlias.
+3) Attachments are sent to the agent peer with contextID = sessionID.
+4) Agent waits for attachmentCount and matches by sessionID (contextID), then peer fallback.
+5) Runtime receives `AgentRuntimeAttachment` list for multimodal processing.
 
 ```mermaid
 sequenceDiagram
@@ -109,6 +120,13 @@ sequenceDiagram
 - request TLVs cap prompt to 255 bytes.
 - responses are chunked into 255-byte TLVs and reassembled.
 - no request timeout or retry.
+- attachment wait timeout/lookback: 180s / 120s (agent side).
+
+## Roadmap Status
+- Phase 0: Done
+- Phase 1: Done
+- Phase 3: Partial (chunking implemented, streaming payload type not added)
+- Phase 6: Partial (sessions + aliases, no session store/commands)
 
 ## Extension Points
 ### LLM Runtime Integration

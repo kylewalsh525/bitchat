@@ -299,6 +299,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     private var agentMeshFlags = AgentMeshFeatureFlags.load()
     private var agentRuntime: AgentRuntime = EchoAgentRuntime()
     var agentResponseAssembler = AgentResponseAssembler()
+    var agentStreamingBuffers: [String: AgentStreamingBuffer] = [:]
     var agentSessionsByThread: [PeerID: AgentSession] = [:]
     var agentThreadsBySessionID: [String: PeerID] = [:]
     let agentSessionHistoryLimit = 20
@@ -310,11 +311,29 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let sessionID: String
         let threadID: PeerID
         let prompt: String
+        let attachmentCount: UInt8?
+        let senderAlias: String?
+        let draftAttachments: [DraftAttachment]
+        let createdAtMs: UInt64
+        let ttlMs: UInt32
+        var retriesLeft: Int
         let sentAt: Date
     }
     var pendingAgentRequests: [String: AgentRequestContext] = [:]
-    private var agentResponseTimeouts: [String: Timer] = [:]
+    var agentResponseTimeouts: [String: Timer] = [:]
+    var agentRequestTimeouts: [String: Timer] = [:]
+    var agentStreamingTimeouts: [String: Timer] = [:]
+    var agentStreamingRetries: Set<String> = []
     private var agentResponseRetries: Set<String> = []
+    var agentRetryQueue = AgentRetryQueue()
+
+    struct AgentResponseCacheEntry {
+        let response: AgentResponsePacket
+        let attachments: [AgentRuntimeAttachment]
+        let cachedAt: Date
+        let totalBytes: Int
+    }
+    var agentResponseCache: [String: AgentResponseCacheEntry] = [:]
 
     struct DraftAttachment {
         let url: URL
@@ -324,7 +343,6 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     @MainActor
     var draftAttachmentsByContext: [String: [DraftAttachment]] = [:]
     private var pendingAgentDraftAttachments: [DraftAttachment] = []
-    var pendingAgentAttachmentCount: UInt8?
     private var pendingAgentAttachmentsBySessionID: [String: [AgentSessionAttachment]] = [:]
     private var pendingAgentAttachmentsByPeerID: [PeerID: [AgentSessionAttachment]] = [:]
 
@@ -1139,16 +1157,10 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         if let agentThread = selectedPrivateChatPeer, agentThread.isAgentSession {
             guard let session = resolveAgentSession(for: agentThread) else {
-                pendingAgentAttachmentCount = nil
                 addSystemMessage("agent session unavailable")
                 return
             }
-            if !draftAttachments.isEmpty {
-                pendingAgentAttachmentCount = UInt8(min(draftAttachments.count, 255))
-            } else {
-                pendingAgentAttachmentCount = nil
-            }
-            sendAgentSessionMessage(prompt: trimmed, threadID: agentThread)
+            sendAgentSessionMessage(prompt: trimmed, threadID: agentThread, draftAttachments: draftAttachments)
             if !draftAttachments.isEmpty {
                 let delay = max(0.2, 0.2 * Double(draftAttachments.count))
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -3474,6 +3486,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             case .agentResponse:
                 guard let response = AgentResponsePacket.decode(from: payload) else { return }
                 handleAgentResponse(response, from: peerID)
+            case .agentResponseChunk:
+                guard let chunk = AgentResponseChunkPacket.decode(from: payload) else { return }
+                handleAgentResponseChunk(chunk, from: peerID)
             case .verifyChallenge:
                 // Parse and respond
                 guard let tlv = VerificationService.shared.parseVerifyChallenge(payload) else { return }
@@ -3559,6 +3574,31 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             senderAlias: senderAlias
         )
         let senderName = session.peerNickname
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let createdAtMs = request.createdAtMs ?? nowMs
+        let ttlMs = request.ttlMs ?? TransportConfig.agentRequestTTLms
+        if nowMs > createdAtMs + UInt64(ttlMs) {
+            let response = AgentResponsePacket(
+                requestID: request.requestID,
+                content: "request expired",
+                isError: true,
+                sessionID: session.sessionID,
+                chunkIndex: nil,
+                chunkTotal: nil
+            )
+            addAgentResponseDM(
+                requestID: response.requestID,
+                role: localInfo.role,
+                content: response.content,
+                peerID: session.threadID,
+                peerNickname: senderName,
+                outgoing: true,
+                isError: true
+            )
+            sendAgentResponseChunks(response, to: peerID)
+            AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: true))
+            return
+        }
         AgentMeshLogger.log(.requestReceived(requestID: request.requestID, role: request.role, peerID: peerID))
         addAgentRequestDM(
             requestID: request.requestID,
@@ -3571,6 +3611,23 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         selectedPrivateChatPeer = session.threadID
         appendAgentSessionHistory(sessionID: session.sessionID, role: "user", content: request.prompt)
         let updatedSession = resolveAgentSession(for: session.threadID) ?? session
+        if let cached = cachedAgentResponse(for: request.requestID) {
+            addAgentResponseDM(
+                requestID: cached.response.requestID,
+                role: localInfo.role,
+                content: cached.response.content,
+                peerID: updatedSession.threadID,
+                peerNickname: senderName,
+                outgoing: true,
+                isError: cached.response.isError
+            )
+            sendAgentResponseChunks(cached.response, to: peerID)
+            if !cached.attachments.isEmpty {
+                sendAgentAttachments(cached.attachments, session: updatedSession)
+            }
+            AgentMeshLogger.log(.responseSent(requestID: cached.response.requestID, peerID: peerID, isError: cached.response.isError))
+            return
+        }
         if localInfo.normalizedRole != requestedRole {
             let response = AgentResponsePacket(
                 requestID: request.requestID,
@@ -3600,18 +3657,21 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             prompt: request.prompt,
             sessionID: session.sessionID,
             attachmentCount: request.attachmentCount,
-            senderAlias: senderAlias
+            senderAlias: senderAlias,
+            createdAtMs: createdAtMs,
+            ttlMs: ttlMs
         )
         Task { [weak self, agentRuntime, localInfo, updatedSession] in
+            guard let self else { return }
             let expected = Int(request.attachmentCount ?? 0)
-            let requestStart = Date().addingTimeInterval(-(self?.agentAttachmentLookbackSeconds ?? 0))
+            let requestStart = Date().addingTimeInterval(-self.agentAttachmentLookbackSeconds)
             let pendingAttachments = expected > 0
-                ? await self?.awaitAgentAttachments(
+                ? await self.awaitAgentAttachments(
                     sessionID: updatedSession.sessionID,
                     peerID: peerID,
                     expected: expected,
                     since: requestStart
-                ) ?? []
+                )
                 : []
             if expected > 0, pendingAttachments.count < expected {
                 await MainActor.run {
@@ -3624,7 +3684,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                         chunkIndex: nil,
                         chunkTotal: nil
                     )
-                    self?.addAgentResponseDM(
+                    self.addAgentResponseDM(
                         requestID: response.requestID,
                         role: localInfo.role,
                         content: message,
@@ -3633,18 +3693,71 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                         outgoing: true,
                         isError: true
                     )
-                    self?.sendAgentResponseChunks(response, to: peerID)
+                    self.sendAgentResponseChunks(response, to: peerID)
                     AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: true))
                 }
                 return
             }
 
-            let runtimeAttachments = self?.makeRuntimeAttachments(from: pendingAttachments) ?? []
+            let runtimeAttachments = self.makeRuntimeAttachments(from: pendingAttachments)
+            if self.agentConfig.runtime.streamResponses, let streamingRuntime = agentRuntime as? StreamingAgentRuntime {
+                var assembled = ""
+                var isError = false
+                let stream = streamingRuntime.runStream(
+                    request: requestWithSession,
+                    from: peerID,
+                    localInfo: localInfo,
+                    session: updatedSession,
+                    attachments: runtimeAttachments
+                )
+                for await chunk in stream {
+                    assembled += chunk.content
+                    isError = isError || chunk.isError
+                    let outbound = AgentResponseChunkPacket(
+                        requestID: request.requestID,
+                        index: chunk.index,
+                        isFinal: chunk.isFinal,
+                        content: chunk.content,
+                        isError: chunk.isError,
+                        sessionID: updatedSession.sessionID
+                    )
+                    await MainActor.run {
+                        self.meshService.sendAgentResponseChunk(outbound, to: peerID)
+                    }
+                    if chunk.isFinal {
+                        await MainActor.run {
+                            let response = AgentResponsePacket(
+                                requestID: request.requestID,
+                                content: assembled,
+                                isError: isError,
+                                sessionID: updatedSession.sessionID,
+                                chunkIndex: nil,
+                                chunkTotal: nil
+                            )
+                            let role = localInfo.role
+                            self.appendAgentSessionHistory(sessionID: updatedSession.sessionID, role: "assistant", content: assembled)
+                            self.addAgentResponseDM(
+                                requestID: response.requestID,
+                                role: role,
+                                content: response.content,
+                                peerID: updatedSession.threadID,
+                                peerNickname: senderName,
+                                outgoing: true,
+                                isError: response.isError
+                            )
+                            self.cacheAgentResponseIfNeeded(response, attachments: [])
+                            AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: response.isError))
+                        }
+                    }
+                }
+                return
+            }
+
             let result = await agentRuntime.run(request: requestWithSession, from: peerID, localInfo: localInfo, session: updatedSession, attachments: runtimeAttachments)
             await MainActor.run {
                 let role = localInfo.role
-                self?.appendAgentSessionHistory(sessionID: updatedSession.sessionID, role: "assistant", content: result.response.content)
-                self?.addAgentResponseDM(
+                self.appendAgentSessionHistory(sessionID: updatedSession.sessionID, role: "assistant", content: result.response.content)
+                self.addAgentResponseDM(
                     requestID: result.response.requestID,
                     role: role,
                     content: result.response.content,
@@ -3653,8 +3766,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                     outgoing: true,
                     isError: result.response.isError
                 )
-                self?.sendAgentResponseChunks(result.response, to: peerID)
-                self?.sendAgentAttachments(result.attachments, session: updatedSession)
+                self.sendAgentResponseChunks(result.response, to: peerID)
+                self.sendAgentAttachments(result.attachments, session: updatedSession)
+                self.cacheAgentResponseIfNeeded(result.response, attachments: result.attachments)
                 AgentMeshLogger.log(.responseSent(requestID: result.response.requestID, peerID: peerID, isError: result.response.isError))
             }
         }
@@ -3663,6 +3777,10 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     @MainActor
     private func handleAgentResponse(_ response: AgentResponsePacket, from peerID: PeerID) {
         let context = pendingAgentRequests[response.requestID]
+        cancelAgentRequestRetry(requestID: response.requestID)
+        if let context {
+            agentRetryQueue.remove(requestID: response.requestID, peerID: context.targetPeerID)
+        }
         let agentName: String = {
             if let name = context?.targetNickname {
                 return name
@@ -3777,33 +3895,11 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let key = agentResponseTimeoutKey(requestID: requestID, sessionID: sessionID)
         guard !agentResponseRetries.contains(key) else { return }
         guard !hasAgentResponseMessage(requestID: requestID, in: threadID) else { return }
-        guard let context = pendingAgentRequests[requestID] else { return }
+        guard pendingAgentRequests[requestID] != nil else { return }
 
         agentResponseRetries.insert(key)
-        _ = pendingAgentRequests.removeValue(forKey: requestID)
-
-        let retryRequestID = "\(requestID)-retry"
-        let retry = AgentRequestPacket(
-            requestID: retryRequestID,
-            role: context.role,
-            prompt: context.prompt,
-            sessionID: context.sessionID,
-            attachmentCount: nil,
-            senderAlias: agentSessionsByThread[context.threadID]?.senderAlias
-        )
-        pendingAgentRequests[retryRequestID] = AgentRequestContext(
-            role: context.role,
-            targetPeerID: context.targetPeerID,
-            targetNickname: context.targetNickname,
-            sessionID: context.sessionID,
-            threadID: context.threadID,
-            prompt: context.prompt,
-            sentAt: Date()
-        )
-
         addLocalPrivateSystemMessage("retrying agent response...", to: threadID)
-        meshService.sendAgentRequest(retry, to: context.targetPeerID)
-        AgentMeshLogger.log(.requestSent(requestID: retryRequestID, role: context.role, peerID: context.targetPeerID))
+        retryAgentRequest(requestID: requestID)
     }
 
     private func hasAgentResponseMessage(requestID: String, in threadID: PeerID) -> Bool {
@@ -3909,6 +4005,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
             // Flush any queued messages for this peer via router
             messageRouter.flushOutbox(for: peerID)
+
+            // Retry any queued agent requests for this peer
+            self.flushAgentRetryQueue(for: peerID)
         }
     }
     
@@ -3986,10 +4085,14 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             
             // Clean up stale unread peer IDs whenever peer list updates
             self.cleanupStaleUnreadPeerIDs()
-            
+
             // Smart notification logic for "bitchatters nearby"
             let meshPeers = peers.filter { peerID in
                 self.meshService.isPeerConnected(peerID) || self.meshService.isPeerReachable(peerID)
+            }
+
+            for peerID in meshPeers where self.meshService.isPeerReachable(peerID) {
+                self.flushAgentRetryQueue(for: peerID)
             }
             let meshPeerSet = Set(meshPeers)
             
@@ -4366,13 +4469,17 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                 let draftAttachments = pendingAgentDraftAttachments
                 pendingAgentDraftAttachments = []
                 let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
+                let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
+                let ttlMs = TransportConfig.agentRequestTTLms
                 let request = AgentRequestPacket(
                     requestID: requestID,
                     role: "direct",
                     prompt: trimmedPrompt,
                     sessionID: session.sessionID,
                     attachmentCount: attachmentCount,
-                    senderAlias: session.senderAlias
+                    senderAlias: session.senderAlias,
+                    createdAtMs: createdAtMs,
+                    ttlMs: ttlMs
                 )
                 pendingAgentRequests[requestID] = AgentRequestContext(
                     role: "direct",
@@ -4381,6 +4488,12 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                     sessionID: session.sessionID,
                     threadID: session.threadID,
                     prompt: trimmedPrompt,
+                    attachmentCount: attachmentCount,
+                    senderAlias: session.senderAlias,
+                    draftAttachments: draftAttachments,
+                    createdAtMs: createdAtMs,
+                    ttlMs: ttlMs,
+                    retriesLeft: TransportConfig.agentRequestMaxRetries,
                     sentAt: Date()
                 )
                 addAgentRequestDM(
@@ -4393,6 +4506,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                 )
                 selectedPrivateChatPeer = session.threadID
                 meshService.sendAgentRequest(request, to: peer.peerID)
+                scheduleAgentRequestRetry(requestID: requestID)
                 if !draftAttachments.isEmpty {
                     let delay = max(0.2, 0.2 * Double(draftAttachments.count))
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -4423,13 +4537,17 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let draftAttachments = pendingAgentDraftAttachments
         pendingAgentDraftAttachments = []
         let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
+        let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let ttlMs = TransportConfig.agentRequestTTLms
         let request = AgentRequestPacket(
             requestID: requestID,
             role: requestRole,
             prompt: trimmedPrompt,
             sessionID: session.sessionID,
             attachmentCount: attachmentCount,
-            senderAlias: session.senderAlias
+            senderAlias: session.senderAlias,
+            createdAtMs: createdAtMs,
+            ttlMs: ttlMs
         )
         pendingAgentRequests[requestID] = AgentRequestContext(
             role: requestRole,
@@ -4438,6 +4556,12 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             sessionID: session.sessionID,
             threadID: session.threadID,
             prompt: trimmedPrompt,
+            attachmentCount: attachmentCount,
+            senderAlias: session.senderAlias,
+            draftAttachments: draftAttachments,
+            createdAtMs: createdAtMs,
+            ttlMs: ttlMs,
+            retriesLeft: TransportConfig.agentRequestMaxRetries,
             sentAt: Date()
         )
         addAgentRequestDM(
@@ -4450,6 +4574,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         )
         selectedPrivateChatPeer = session.threadID
         meshService.sendAgentRequest(request, to: target.peerID)
+        scheduleAgentRequestRetry(requestID: requestID)
         if !draftAttachments.isEmpty {
             let delay = max(0.2, 0.2 * Double(draftAttachments.count))
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in

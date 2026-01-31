@@ -52,7 +52,7 @@ extension ChatViewModel {
     }
 
     @MainActor
-    func sendAgentSessionMessage(prompt: String, threadID: PeerID) {
+    func sendAgentSessionMessage(prompt: String, threadID: PeerID, draftAttachments: [DraftAttachment]) {
         guard let session = agentSessionsByThread[threadID] else {
             addSystemMessage("agent session unavailable")
             return
@@ -62,15 +62,18 @@ extension ChatViewModel {
         guard !trimmedPrompt.isEmpty else { return }
 
         let requestID = UUID().uuidString
-        let attachmentCount = pendingAgentAttachmentCount
-        pendingAgentAttachmentCount = nil
+        let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
+        let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let ttlMs = TransportConfig.agentRequestTTLms
         let request = AgentRequestPacket(
             requestID: requestID,
             role: session.role,
             prompt: trimmedPrompt,
             sessionID: session.sessionID,
             attachmentCount: attachmentCount,
-            senderAlias: session.senderAlias
+            senderAlias: session.senderAlias,
+            createdAtMs: createdAtMs,
+            ttlMs: ttlMs
         )
 
         pendingAgentRequests[requestID] = AgentRequestContext(
@@ -80,6 +83,12 @@ extension ChatViewModel {
             sessionID: session.sessionID,
             threadID: session.threadID,
             prompt: trimmedPrompt,
+            attachmentCount: attachmentCount,
+            senderAlias: session.senderAlias,
+            draftAttachments: draftAttachments,
+            createdAtMs: createdAtMs,
+            ttlMs: ttlMs,
+            retriesLeft: TransportConfig.agentRequestMaxRetries,
             sentAt: Date()
         )
 
@@ -93,6 +102,7 @@ extension ChatViewModel {
         )
         appendAgentSessionHistory(sessionID: session.sessionID, role: "user", content: trimmedPrompt)
         meshService.sendAgentRequest(request, to: session.peerID)
+        scheduleAgentRequestRetry(requestID: requestID)
         AgentMeshLogger.log(.requestSent(requestID: requestID, role: session.role, peerID: session.peerID))
     }
 

@@ -21,6 +21,22 @@ scopes without stepping on each other.
 - Phase 7: Advanced Routing (Fanout + Bids)
   - `docs/AGENT_MESH_ROADMAP/PHASE_7_ADVANCED_ROUTING.md`
 
+## Current Status (as of now)
+- Phase 0: Done
+- Phase 1: Partial (runtime + gateway done; dedicated agent setup UI + model catalog pending)
+- Phase 2: Done
+- Phase 3: Done
+- Phase 4: Not started
+- Phase 5: Not started
+- Phase 6: Partial (session IDs + agent DM threads exist; no session store or /agentsession commands)
+- Phase 7: Not started
+
+## Roadmap Focus Update (Distributed LLM Horsepower)
+We will fold OpenClaw-style automation needs into existing phases:
+- Phase 4: pricing + payment gating for agent work (micropayments)
+- Phase 6: enforce ephemeral agent DMs + local memory snippet export
+- Phase 7: quality/price/model-hash routing + bid/quote selection
+
 ## Working Rules (for Parallel Subagents)
 - Each work package owns a small, explicit set of files. Avoid touching files
   owned by other packages.

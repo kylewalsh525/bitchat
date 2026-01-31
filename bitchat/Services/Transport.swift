@@ -57,6 +57,7 @@ protocol Transport: AnyObject {
     func cancelTransfer(_ transferId: String)
     func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID)
     func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID)
+    func sendAgentResponseChunk(_ chunk: AgentResponseChunkPacket, to peerID: PeerID)
 
     // QR verification (optional for transports)
     func sendVerifyChallenge(to peerID: PeerID, noiseKeyHex: String, nonceA: Data)
@@ -75,6 +76,7 @@ extension Transport {
     func cancelTransfer(_ transferId: String) {}
     func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID) {}
     func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID) {}
+    func sendAgentResponseChunk(_ chunk: AgentResponseChunkPacket, to peerID: PeerID) {}
 
     func sendMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date) {
         sendMessage(content, mentions: mentions)

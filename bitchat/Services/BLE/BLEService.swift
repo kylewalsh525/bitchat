@@ -750,6 +750,16 @@ final class BLEService: NSObject {
         sendNoisePayload(payload, to: peerID)
     }
 
+    func sendAgentResponseChunk(_ chunk: AgentResponseChunkPacket, to peerID: PeerID) {
+        guard let tlv = chunk.encode() else {
+            SecureLogger.error("❌ Failed to encode agent response chunk", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentResponseChunk.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
     func sendFileBroadcast(_ filePacket: BitchatFilePacket, transferId: String) {
         messageQueue.async { [weak self] in
             guard let self = self else { return }
@@ -4285,6 +4295,11 @@ extension BLEService {
                 let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
                 notifyUI { [weak self] in
                     self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentResponse, payload: Data(payloadData), timestamp: ts)
+                }
+            case .agentResponseChunk:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentResponseChunk, payload: Data(payloadData), timestamp: ts)
                 }
             case .verifyChallenge:
                 let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)

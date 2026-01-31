@@ -59,6 +59,10 @@ Send a single-shot agent request to a peer.
 - role (type 0x01): string
 - prompt (type 0x02): string
 - sessionID (type 0x03): string (optional)
+- attachmentCount (type 0x04): uint8 (optional)
+- senderAlias (type 0x05): string (optional)
+- createdAtMs (type 0x06): uint64 (optional)
+- ttlMs (type 0x07): uint32 (optional)
 
 ### Limits
 - Each TLV value is capped to 255 bytes.
@@ -79,6 +83,18 @@ Return a single-shot agent response to the requester.
 ### Limits
 - content is capped to 255 bytes per chunk.
 - If chunkIndex/chunkTotal are present, multiple responses are sent and reassembled.
+
+## File Transfer Context for Attachments
+Agent attachments are sent as `BitchatFilePacket` with:
+- `contextID = sessionID`
+- `content` = file data
+
+The agent waits for `attachmentCount` items and matches attachments by:
+1) sessionID (contextID), then
+2) sender peer ID fallback (for late or legacy arrivals).
+
+## Session ID Normalization
+Session IDs are normalized to lowercase for consistent lookup.
 
 ## Routing Constraints
 - Request/response payloads are Noise-encrypted.

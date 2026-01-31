@@ -2,6 +2,12 @@
 
 Goal: Replace EchoAgentRuntime with a real runtime and configuration surface.
 
+Status: Partial
+- Runtime selection and config surface implemented.
+- Gateway client/runtime implemented.
+- Runtime status exposed via /agentconfig and UI system messages.
+- Dedicated agent setup UI + model discovery pending.
+
 ## Work Packages
 ### P1-RUNTIME-1: Runtime selection + base protocol
 - Goal: Add a runtime selector without breaking EchoAgentRuntime.
@@ -32,6 +38,7 @@ Goal: Replace EchoAgentRuntime with a real runtime and configuration surface.
   - `/agentgateway <url>`
   - `/agenttoken <token>`
   - `/agenttimeout <seconds>`
+  - `/agentstream <on|off>`
 - Dependencies: P1-RUNTIME-1
 - Done when: `/agentconfig` prints runtime mode + endpoint status.
 
@@ -43,3 +50,15 @@ Goal: Replace EchoAgentRuntime with a real runtime and configuration surface.
   - `/agentconfig` output includes runtime + endpoint health
 - Dependencies: P1-GW-1, P1-CMD-1
 - Done when: users can see runtime status without debugging.
+
+### P1-UI-2: Agent setup + model discovery UI
+- Goal: Provide a dedicated UI to configure agent settings and discover available agent types/models.
+- Owned files: `bitchat/Views/AgentSettingsView.swift` (new),
+  `bitchat/ViewModels/ChatViewModel.swift` (config binding),
+  `bitchat/Services/AgentCatalogService.swift` (new)
+- Interfaces:
+  - Agent settings panel (enable, role, model, quality, runtime mode, stream toggle)
+  - Agent catalog list (local runtime + gateway-supported model list)
+  - “Capabilities” view that lists available roles and models with quality hints
+- Dependencies: P1-RUNTIME-1, P1-GW-1
+- Done when: users can configure agent without commands and browse available models/roles.

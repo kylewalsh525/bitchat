@@ -238,6 +238,8 @@ struct AgentRequestPacket {
     let sessionID: String?
     let attachmentCount: UInt8?
     let senderAlias: String?
+    let createdAtMs: UInt64?
+    let ttlMs: UInt32?
 
     func encode() -> Data? {
         var data = Data()
@@ -276,6 +278,18 @@ struct AgentRequestPacket {
             data.append(UInt8(aliasData.count))
             data.append(aliasData)
         }
+        if let createdAtMs {
+            data.append(AgentRequestTLV.createdAtMs.rawValue)
+            data.append(8)
+            var value = createdAtMs.bigEndian
+            withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
+        }
+        if let ttlMs {
+            data.append(AgentRequestTLV.ttlMs.rawValue)
+            data.append(4)
+            var value = ttlMs.bigEndian
+            withUnsafeBytes(of: &value) { data.append(contentsOf: $0) }
+        }
         return data
     }
 
@@ -287,6 +301,8 @@ struct AgentRequestPacket {
         var sessionID: String?
         var attachmentCount: UInt8?
         var senderAlias: String?
+        var createdAtMs: UInt64?
+        var ttlMs: UInt32?
 
         while offset + 2 <= data.count {
             let typeByte = data[offset]
@@ -311,6 +327,14 @@ struct AgentRequestPacket {
                 attachmentCount = value.first
             case .senderAlias:
                 senderAlias = String(data: value, encoding: .utf8)
+            case .createdAtMs:
+                if value.count == 8 {
+                    createdAtMs = value.reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+                }
+            case .ttlMs:
+                if value.count == 4 {
+                    ttlMs = value.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+                }
             }
         }
 
@@ -321,7 +345,9 @@ struct AgentRequestPacket {
             prompt: prompt,
             sessionID: sessionID,
             attachmentCount: attachmentCount,
-            senderAlias: senderAlias
+            senderAlias: senderAlias,
+            createdAtMs: createdAtMs,
+            ttlMs: ttlMs
         )
     }
 }
@@ -426,6 +452,102 @@ struct AgentResponsePacket {
             sessionID: sessionID,
             chunkIndex: chunkIndex,
             chunkTotal: chunkTotal
+        )
+    }
+}
+
+struct AgentResponseChunkPacket {
+    let requestID: String
+    let index: UInt16
+    let isFinal: Bool
+    let content: String
+    let isError: Bool
+    let sessionID: String?
+
+    func encode() -> Data? {
+        var data = Data()
+        guard let idData = requestID.data(using: .utf8), idData.count <= AgentMeshConstants.maxTLVStringBytes else { return nil }
+        guard let contentData = content.data(using: .utf8), contentData.count <= 65535 else { return nil }
+
+        data.append(AgentResponseChunkTLV.requestID.rawValue)
+        data.append(UInt8(idData.count))
+        data.append(idData)
+
+        data.append(AgentResponseChunkTLV.content.rawValue)
+        data.append(UInt8(min(contentData.count, AgentMeshConstants.maxTLVStringBytes)))
+        data.append(contentData.prefix(AgentMeshConstants.maxTLVStringBytes))
+
+        data.append(AgentResponseChunkTLV.isError.rawValue)
+        data.append(1)
+        data.append(isError ? 1 : 0)
+
+        if let sessionID,
+           let sessionData = sessionID.data(using: .utf8),
+           sessionData.count <= AgentMeshConstants.maxTLVStringBytes {
+            data.append(AgentResponseChunkTLV.sessionID.rawValue)
+            data.append(UInt8(sessionData.count))
+            data.append(sessionData)
+        }
+
+        data.append(AgentResponseChunkTLV.index.rawValue)
+        data.append(2)
+        data.append(UInt8((index >> 8) & 0xFF))
+        data.append(UInt8(index & 0xFF))
+
+        data.append(AgentResponseChunkTLV.isFinal.rawValue)
+        data.append(1)
+        data.append(isFinal ? 1 : 0)
+
+        return data
+    }
+
+    static func decode(from data: Data) -> AgentResponseChunkPacket? {
+        var offset = 0
+        var requestID: String?
+        var content: String?
+        var isError = false
+        var sessionID: String?
+        var index: UInt16?
+        var isFinal = false
+
+        while offset + 2 <= data.count {
+            let typeByte = data[offset]
+            offset += 1
+            let length = Int(data[offset])
+            offset += 1
+            guard offset + length <= data.count else { return nil }
+            let value = data[offset..<offset + length]
+            offset += length
+
+            guard let type = AgentResponseChunkTLV(rawValue: typeByte) else { continue }
+            switch type {
+            case .requestID:
+                requestID = String(data: value, encoding: .utf8)
+            case .content:
+                content = String(data: value, encoding: .utf8)
+            case .isError:
+                isError = value.first == 1
+            case .sessionID:
+                sessionID = String(data: value, encoding: .utf8)
+            case .index:
+                if value.count == 2 {
+                    let hi = UInt16(value[value.startIndex])
+                    let lo = UInt16(value[value.index(after: value.startIndex)])
+                    index = (hi << 8) | lo
+                }
+            case .isFinal:
+                isFinal = value.first == 1
+            }
+        }
+
+        guard let requestID = requestID, let content = content, let index = index else { return nil }
+        return AgentResponseChunkPacket(
+            requestID: requestID,
+            index: index,
+            isFinal: isFinal,
+            content: content,
+            isError: isError,
+            sessionID: sessionID
         )
     }
 }

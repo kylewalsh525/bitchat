@@ -3,6 +3,11 @@
 Goal: Stabilize specs, add test vectors, and set up feature flags so later
 phases can land safely.
 
+Status: Done
+- Agent mesh constants and versioning centralized.
+- Packet encode/decode tests added.
+- Feature flags and logging hooks implemented.
+
 ## Work Packages
 ### P0-SPEC-1: Agent Mesh constants + versioning
 - Goal: Centralize protocol constants and a version byte for AgentInfo.

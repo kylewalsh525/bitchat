@@ -26,6 +26,14 @@ Expected: system message showing agent on, role/model/quality.
 
 Expected: request + response appear in a new private DM thread (per session) with the agent.
 
+## Media + /agent (Device A)
+1) Attach an image (should appear as a draft thumbnail, not sent yet).
+2) Run `/agent general describe this`.
+Expected:
+- Image stays queued until the request is sent.
+- The agent receives the image + prompt together.
+- Response appears in the agent DM thread.
+
 ## Gateway Runtime (Optional)
 - Start a local OpenAI proxy (macOS terminal):
   - export OPENAI_API_KEY=sk-...

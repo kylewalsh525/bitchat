@@ -2,6 +2,8 @@
 
 Goal: Make agent selection rely on verifiable claims, not self-declared scores.
 
+Status: Not started
+
 ## Work Packages
 ### P5-PROTOCOL-1: Trust attestation TLV
 - Goal: Attach signed quality claims to AgentInfo.

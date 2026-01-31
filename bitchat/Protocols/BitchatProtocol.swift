@@ -108,6 +108,7 @@ enum NoisePayloadType: UInt8 {
     // Agent messaging
     case agentRequest = 0x20        // Agent request payload
     case agentResponse = 0x21       // Agent response payload
+    case agentResponseChunk = 0x22  // Agent response streaming chunk payload
     // Verification (QR-based OOB binding)
     case verifyChallenge = 0x10     // Verification challenge
     case verifyResponse  = 0x11     // Verification response
@@ -119,6 +120,7 @@ enum NoisePayloadType: UInt8 {
         case .delivered: return "delivered"
         case .agentRequest: return "agentRequest"
         case .agentResponse: return "agentResponse"
+        case .agentResponseChunk: return "agentResponseChunk"
         case .verifyChallenge: return "verifyChallenge"
         case .verifyResponse: return "verifyResponse"
         }

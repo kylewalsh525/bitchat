@@ -53,6 +53,52 @@ extension ChatViewModel {
         )
     }
 
+    @MainActor
+    func upsertAgentResponseDM(requestID: String, role: String, content: String, peerID: PeerID, peerNickname: String, outgoing: Bool, isError: Bool, markUnread: Bool) {
+        let prefix = isError ? "[agent error \(role)]" : "[agent \(role)]"
+        let body = "\(prefix) \(content)"
+        let messageID = agentMessageID(kind: outgoing ? "resp-out" : "resp-in", requestID: requestID)
+        let senderName: String = {
+            if outgoing, peerID.isAgentSession, let alias = agentSessionOutgoingDisplayName(for: peerID) {
+                return alias
+            }
+            return outgoing ? nickname : peerNickname
+        }()
+
+        if var messages = privateChats[peerID],
+           let index = messages.firstIndex(where: { $0.id == messageID }) {
+            let existing = messages[index]
+            let updated = BitchatMessage(
+                id: existing.id,
+                sender: existing.sender,
+                content: body,
+                timestamp: existing.timestamp,
+                isRelay: existing.isRelay,
+                originalSender: existing.originalSender,
+                isPrivate: true,
+                recipientNickname: existing.recipientNickname,
+                senderPeerID: existing.senderPeerID,
+                mentions: nil,
+                deliveryStatus: existing.deliveryStatus
+            )
+            messages[index] = updated
+            privateChats[peerID] = messages
+            privateChatManager.sanitizeChat(for: peerID)
+            objectWillChange.send()
+            return
+        }
+
+        appendAgentPrivateMessage(
+            peerID: peerID,
+            sender: senderName,
+            senderPeerID: outgoing ? meshService.myPeerID : peerID,
+            content: body,
+            messageID: messageID,
+            deliveryStatus: outgoing ? .sent : nil,
+            markUnread: markUnread
+        )
+    }
+
     // MARK: - Helpers
     private func agentMessageID(kind: String, requestID: String) -> String {
         "agent-\(kind)-\(requestID)"

@@ -2,6 +2,12 @@
 
 Goal: Allow large responses to arrive as chunks.
 
+Status: Done
+- Added streaming payload type + chunk packet.
+- Added streaming runtime adapter (AsyncStream) with default fallback.
+- Incremental UI rendering with timeout + retry support.
+- Optional toggle via `/agentstream <on|off>`.
+
 ## Work Packages
 ### P3-PROTOCOL-1: Response chunk payload
 - Goal: Define a new Noise payload type for chunks.
@@ -9,7 +15,7 @@ Goal: Allow large responses to arrive as chunks.
   `bitchat/Protocols/Packets.swift`
 - Interfaces:
   - `NoisePayloadType.agentResponseChunk = 0x22`
-  - `AgentResponseChunkPacket { requestID, index, isFinal, content }`
+  - `AgentResponseChunkPacket { requestID, index, isFinal, content, isError }`
 - Dependencies: P0-SPEC-1
 - Done when: encode/decode tests pass for chunk packets.
 
@@ -28,7 +34,7 @@ Goal: Allow large responses to arrive as chunks.
 - Owned files: `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshStreaming.swift` (new),
   `bitchat/Views/` (new minimal UI helper if needed)
 - Interfaces:
-  - `AgentStreamAssembler` in view model to append chunks by requestID
+  - `AgentStreamingBuffer` per requestID with throttled UI updates
   - Final chunk closes the message and clears pending state
 - Dependencies: P3-PROTOCOL-1
 - Done when: users see streamed text progressively.

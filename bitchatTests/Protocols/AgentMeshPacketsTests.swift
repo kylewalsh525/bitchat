@@ -51,7 +51,9 @@ final class AgentMeshPacketsTests: XCTestCase {
             prompt: longPrompt,
             sessionID: "sess-1",
             attachmentCount: nil,
-            senderAlias: "anon-1234"
+            senderAlias: "anon-1234",
+            createdAtMs: 123456789,
+            ttlMs: 30000
         )
         guard let data = request.encode() else {
             XCTFail("Failed to encode agent request")
@@ -64,6 +66,8 @@ final class AgentMeshPacketsTests: XCTestCase {
         XCTAssertEqual(decoded?.prompt.count, AgentMeshConstants.maxAgentPromptBytes)
         XCTAssertEqual(decoded?.sessionID, "sess-1")
         XCTAssertEqual(decoded?.senderAlias, "anon-1234")
+        XCTAssertEqual(decoded?.createdAtMs, 123456789)
+        XCTAssertEqual(decoded?.ttlMs, 30000)
     }
 
     func testAgentResponseEncodeDecodeTruncation() {
@@ -120,5 +124,29 @@ final class AgentMeshPacketsTests: XCTestCase {
         )
         XCTAssertEqual(second?.content, "Hello world")
         XCTAssertEqual(second?.isError, false)
+    }
+
+    func testAgentResponseChunkEncodeDecode() {
+        let longContent = String(repeating: "c", count: 300)
+        let packet = AgentResponseChunkPacket(
+            requestID: "req-1",
+            index: 2,
+            isFinal: true,
+            content: longContent,
+            isError: true,
+            sessionID: "sess-1"
+        )
+        guard let data = packet.encode() else {
+            XCTFail("Failed to encode agent response chunk")
+            return
+        }
+
+        let decoded = AgentResponseChunkPacket.decode(from: data)
+        XCTAssertEqual(decoded?.requestID, "req-1")
+        XCTAssertEqual(decoded?.index, 2)
+        XCTAssertEqual(decoded?.isFinal, true)
+        XCTAssertEqual(decoded?.isError, true)
+        XCTAssertEqual(decoded?.sessionID, "sess-1")
+        XCTAssertEqual(decoded?.content.count, AgentMeshConstants.maxAgentResponseBytes)
     }
 }

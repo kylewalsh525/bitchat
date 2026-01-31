@@ -112,6 +112,8 @@ final class CommandProcessor {
             return handleAgentToken(args)
         case "/agenttimeout":
             return handleAgentTimeout(args)
+        case "/agentstream":
+            return handleAgentStream(args)
         case "/hug":
             return handleEmote(args, command: "hug", action: "hugs", emoji: "🫂")
         case "/slap":
@@ -208,7 +210,8 @@ final class CommandProcessor {
         let config = ctx.agentConfig
         let status = config.enabled ? "on" : "off"
         let hash = config.modelHash?.isEmpty == false ? " hash=\(config.modelHash!)" : ""
-        var runtime = "runtime=\(config.runtime.mode.rawValue) timeout=\(config.runtime.timeoutSeconds)s"
+        let streamStatus = config.runtime.streamResponses ? "on" : "off"
+        var runtime = "runtime=\(config.runtime.mode.rawValue) timeout=\(config.runtime.timeoutSeconds)s stream=\(streamStatus)"
         if config.runtime.mode == .gateway {
             let tokenStatus = (config.runtime.gatewayToken?.isEmpty == false) ? "token=set" : "token=unset"
             runtime += " url=\(config.runtime.gatewayURL) \(tokenStatus)"
@@ -317,6 +320,18 @@ final class CommandProcessor {
         next.runtime.timeoutSeconds = seconds
         ctx.updateAgentConfig(next)
         return .success(message: "agent timeout set to \(seconds)s")
+    }
+
+    private func handleAgentStream(_ args: String) -> CommandResult {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard trimmed == "on" || trimmed == "off" else {
+            return .error(message: "usage: /agentstream <on|off>")
+        }
+        guard let ctx = contextProvider else { return .error(message: "agent config unavailable") }
+        var next = ctx.agentConfig
+        next.runtime.streamResponses = trimmed == "on"
+        ctx.updateAgentConfig(next)
+        return .success(message: "agent streaming set to \(trimmed)")
     }
     
     private func handleEmote(_ args: String, command: String, action: String, emoji: String, suffix: String = "") -> CommandResult {

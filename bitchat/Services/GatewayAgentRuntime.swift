@@ -12,7 +12,7 @@ enum AgentRuntimeHealthEvent {
     case failure(String, Date)
 }
 
-final class GatewayAgentRuntime: AgentRuntime {
+final class GatewayAgentRuntime: StreamingAgentRuntime {
     private let client: AgentGatewayClient
     private let config: AgentRuntimeConfig
     private let onHealthUpdate: ((AgentRuntimeHealthEvent) -> Void)?

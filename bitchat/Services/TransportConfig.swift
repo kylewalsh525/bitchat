@@ -23,6 +23,13 @@ enum TransportConfig {
     static let networkResetGraceSeconds: TimeInterval = 600 // 10 minutes
     static let basePublicFlushInterval: TimeInterval = 0.08  // ~12.5 fps batching
 
+    // Agent request reliability
+    static let agentRequestTTLms: UInt32 = 30_000
+    static let agentRequestMaxRetries: Int = 2
+    static let agentRequestRetryIntervalSeconds: TimeInterval = 6.0
+    static let agentRequestIdempotencySeconds: TimeInterval = 600
+    static let agentResponseCacheMaxBytes: Int = 1_000_000
+
     // BLE duty/announce/connect
     static let bleConnectRateLimitInterval: TimeInterval = 0.5
     static let bleMaxCentralLinks: Int = 6

@@ -43,7 +43,7 @@ final class NotificationService {
     func requestAuthorization() {
         #if os(macOS)
         return
-        #endif
+        #else
         guard !isRunningTests, canUseNotifications() else { return }
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
             if granted {
@@ -52,6 +52,7 @@ final class NotificationService {
                 // Permission denied
             }
         }
+        #endif
     }
     
     func sendLocalNotification(
@@ -63,7 +64,7 @@ final class NotificationService {
     ) {
         #if os(macOS)
         return
-        #endif
+        #else
         guard !isRunningTests, canUseNotifications() else { return }
         let content = UNMutableNotificationContent()
         content.title = title
@@ -82,6 +83,7 @@ final class NotificationService {
         )
 
         UNUserNotificationCenter.current().add(request)
+        #endif
     }
     
     func sendMentionNotification(from sender: String, message: String) {

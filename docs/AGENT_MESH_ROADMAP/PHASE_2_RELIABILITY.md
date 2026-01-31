@@ -2,6 +2,11 @@
 
 Goal: Add TTL, idempotency, and retry behavior for intermittent mesh links.
 
+Status: Done
+- Added request TTL + createdAt TLVs for expiry.
+- Added retry queue with reconnect flushing and max retries.
+- Added response idempotency cache + resend.
+
 ## Work Packages
 ### P2-PROTOCOL-1: TTL and createdAt TLVs
 - Goal: Allow expiry of stale requests.
@@ -9,8 +14,8 @@ Goal: Add TTL, idempotency, and retry behavior for intermittent mesh links.
   `bitchat/Protocols/BitchatProtocol.swift`
 - Interfaces:
   - `AgentRequestPacket` adds TLVs:
-    - `createdAtMs` (UInt64, type 0x03)
-    - `ttlMs` (UInt32, type 0x04)
+    - `createdAtMs` (UInt64, type 0x06)
+    - `ttlMs` (UInt32, type 0x07)
 - Dependencies: P0-SPEC-1
 - Done when: encoder/decoder supports TTL and ignores unknown TLVs.
 
@@ -32,3 +37,12 @@ Goal: Add TTL, idempotency, and retry behavior for intermittent mesh links.
   - `retryOnReachable(peerID)`
 - Dependencies: P2-SENDER-1
 - Done when: a disconnected peer triggers retries up to max attempts.
+
+### P2-IDEMPOTENCY-1: Response cache and resend
+- Goal: Prevent duplicate work when retries are in flight.
+- Owned files: `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshRequests.swift`
+- Interfaces:
+  - `cacheAgentResponseIfNeeded`
+  - `cachedAgentResponse(for:)`
+- Dependencies: P2-RETRY-1
+- Done when: duplicate request IDs resend cached responses.
