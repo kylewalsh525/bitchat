@@ -17,6 +17,8 @@ struct AgentSessionRecord: Codable, Identifiable, Equatable {
     var lastUsedAt: Date
     var title: String
     var history: [AgentSessionMessage]
+    var paymentState: AgentSessionPaymentState?
+    var paymentUpdatedAt: Date?
 }
 
 @MainActor
@@ -24,8 +26,8 @@ final class AgentSessionStore {
     private var sessionsByID: [String: AgentSessionRecord] = [:]
     private let storeURL: URL
 
-    init() {
-        self.storeURL = AgentSessionStore.defaultStoreURL()
+    init(storeURL: URL = AgentSessionStore.defaultStoreURL()) {
+        self.storeURL = storeURL
         load()
     }
 
@@ -62,7 +64,9 @@ final class AgentSessionStore {
             createdAt: now,
             lastUsedAt: now,
             title: title,
-            history: trimHistory(seedHistory)
+            history: trimHistory(seedHistory),
+            paymentState: nil,
+            paymentUpdatedAt: nil
         )
         sessionsByID[recordID] = record
         purgeIfNeeded()
@@ -85,6 +89,23 @@ final class AgentSessionStore {
     func touch(recordID: String) {
         guard var record = sessionsByID[recordID] else { return }
         record.lastUsedAt = Date()
+        sessionsByID[recordID] = record
+        save()
+    }
+
+    func updatePaymentState(recordID: String, state: AgentSessionPaymentState) {
+        guard var record = sessionsByID[recordID] else { return }
+        record.paymentState = state
+        record.paymentUpdatedAt = Date()
+        record.lastUsedAt = Date()
+        sessionsByID[recordID] = record
+        save()
+    }
+
+    func clearPaymentState(recordID: String) {
+        guard var record = sessionsByID[recordID] else { return }
+        record.paymentState = nil
+        record.paymentUpdatedAt = nil
         sessionsByID[recordID] = record
         save()
     }
@@ -182,7 +203,7 @@ final class AgentSessionStore {
         return String(raw[..<idx]) + "…"
     }
 
-    private static func defaultStoreURL() -> URL {
+    nonisolated private static func defaultStoreURL() -> URL {
         let fm = FileManager.default
         let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fm.urls(for: .documentDirectory, in: .userDomainMask).first

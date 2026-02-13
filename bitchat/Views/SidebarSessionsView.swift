@@ -49,6 +49,17 @@ struct SidebarSessionsView: View {
                             Text(relativeFormatter.localizedString(for: record.lastUsedAt, relativeTo: Date()))
                                 .font(.bitchatSystem(size: 11, design: .monospaced))
                                 .foregroundColor(secondaryTextColor)
+                            if let paymentState = record.paymentState {
+                                Text(paymentLabel(for: paymentState))
+                                    .font(.bitchatSystem(size: 10, design: .monospaced))
+                                    .foregroundColor(paymentColor(for: paymentState))
+                            }
+                        }
+                        if let modelText = modelIdentityText(for: record) {
+                            Text(modelText)
+                                .font(.bitchatSystem(size: 10, design: .monospaced))
+                                .foregroundColor(secondaryTextColor)
+                                .lineLimit(1)
                         }
                         HStack {
                             Spacer()
@@ -117,5 +128,46 @@ struct SidebarSessionsView: View {
             viewModel.addSystemMessage(message)
         }
         onSelectSession?()
+    }
+
+    private func paymentLabel(for state: AgentSessionPaymentState) -> String {
+        switch state {
+        case .paid:
+            return "paid"
+        case .acceptedOffline:
+            return "offline"
+        case .finalized:
+            return "finalized"
+        case .failed:
+            return "failed"
+        }
+    }
+
+    private func paymentColor(for state: AgentSessionPaymentState) -> Color {
+        switch state {
+        case .paid:
+            return .yellow
+        case .acceptedOffline:
+            return .orange
+        case .finalized:
+            return .green
+        case .failed:
+            return .red
+        }
+    }
+
+    private func modelIdentityText(for record: AgentSessionRecord) -> String? {
+        guard let raw = record.modelHash?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return nil
+        }
+
+        let match = viewModel.knownModelCatalog.resolve(modelId: nil, modelHash: raw)
+        let prefixLen = 24
+        let prefix = raw.count > prefixLen ? String(raw.prefix(prefixLen)) + "…" : raw
+        if let match {
+            return "model: \(match.model.name) (\(prefix))"
+        }
+        return "model: \(prefix)"
     }
 }

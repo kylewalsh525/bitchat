@@ -48,6 +48,11 @@ extension ChatViewModel {
         let now = Date()
         if now >= expiresAt || context.retriesLeft <= 0 {
             pendingAgentRequests.removeValue(forKey: requestID)
+            pendingAgentPayments.removeValue(forKey: requestID)
+            pendingInboundPaymentRequests.removeValue(forKey: requestID)
+            clearDeferredAgentResponses(for: requestID)
+            if let timer = agentPaymentExpiryTimers.removeValue(forKey: requestID) { timer.invalidate() }
+            if let timer = inboundPaymentExpiryTimers.removeValue(forKey: requestID) { timer.invalidate() }
             agentRetryQueue.remove(requestID: requestID, peerID: context.targetPeerID)
             addLocalPrivateSystemMessage("agent request timed out", to: context.threadID)
             AgentMeshLogger.log(.responseReceived(requestID: requestID, peerID: context.targetPeerID, isError: true))
@@ -66,7 +71,9 @@ extension ChatViewModel {
                 attachmentCount: context.attachmentCount,
                 senderAlias: context.senderAlias,
                 createdAtMs: context.createdAtMs,
-                ttlMs: context.ttlMs
+                ttlMs: context.ttlMs,
+                quoteID: context.quoteID,
+                quoteOptionID: context.quoteOptionID
             )
             meshService.sendAgentRequest(retryRequest, to: context.targetPeerID)
             if !context.draftAttachments.isEmpty {

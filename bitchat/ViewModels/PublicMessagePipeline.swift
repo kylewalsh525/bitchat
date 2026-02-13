@@ -24,7 +24,7 @@ final class PublicMessagePipeline {
     weak var delegate: PublicMessagePipelineDelegate?
 
     private var buffer: [BitchatMessage] = []
-    private var timer: Timer?
+    private var flushTask: Task<Void, Never>?
     private let baseFlushInterval: TimeInterval
     private var dynamicFlushInterval: TimeInterval
     private var recentBatchSizes: [Int] = []
@@ -44,7 +44,7 @@ final class PublicMessagePipeline {
     }
 
     deinit {
-        timer?.invalidate()
+        flushTask?.cancel()
     }
 
     func updateActiveChannel(_ channel: ChannelID) {
@@ -61,8 +61,8 @@ final class PublicMessagePipeline {
     }
 
     func reset() {
-        timer?.invalidate()
-        timer = nil
+        flushTask?.cancel()
+        flushTask = nil
         buffer.removeAll(keepingCapacity: false)
     }
 
@@ -70,18 +70,21 @@ final class PublicMessagePipeline {
 
 private extension PublicMessagePipeline {
     func scheduleFlush() {
-        guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: dynamicFlushInterval, repeats: false) { [weak self] _ in
+        guard flushTask == nil else { return }
+        let delaySeconds = dynamicFlushInterval
+        flushTask = Task { [weak self] in
             guard let self else { return }
-            Task { @MainActor in
+            let nanos = UInt64(max(0.0, delaySeconds) * 1_000_000_000.0)
+            try? await Task.sleep(nanoseconds: nanos)
+            await MainActor.run {
                 self.flushBuffer()
             }
         }
     }
 
     func flushBuffer() {
-        timer?.invalidate()
-        timer = nil
+        flushTask?.cancel()
+        flushTask = nil
         guard !buffer.isEmpty else { return }
         guard let delegate = delegate else {
             buffer.removeAll(keepingCapacity: false)

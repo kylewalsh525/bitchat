@@ -32,6 +32,10 @@ enum CommandInfo: String, Identifiable {
     case agenttimeout
     case agentstream
     case agentsession
+    case agentchoose
+    case agentpay
+    case agentwallet
+    case agentfilter
     
     var id: String { rawValue }
     
@@ -63,6 +67,14 @@ enum CommandInfo: String, Identifiable {
             return "<on|off>"
         case .agentsession:
             return "<list|resume|new|end> [id]"
+        case .agentchoose:
+            return "<quoteID> <optionIndex>"
+        case .agentpay:
+            return "<requestID>"
+        case .agentwallet:
+            return "<import|export|balance> ..."
+        case .agentfilter:
+            return "<rail|any> <unit|any> <maxPrice|any> <mode|any>"
         case .clear, .who:
             return nil
         }
@@ -91,6 +103,10 @@ enum CommandInfo: String, Identifiable {
         case .agenttimeout: "set agent runtime timeout"
         case .agentstream: "toggle agent response streaming"
         case .agentsession: "manage agent sessions"
+        case .agentchoose: "choose a quoted provider tier"
+        case .agentpay: "pay pending agent request"
+        case .agentwallet: "manage local cashu wallet"
+        case .agentfilter: "set local payment filter for /agent routing"
         }
     }
     
@@ -98,6 +114,7 @@ enum CommandInfo: String, Identifiable {
         let baseCommands: [CommandInfo] = [
             .agent, .agentconfig, .agentset, .agenton, .agentoff, .agentquality,
             .agentruntime, .agentgateway, .agenttoken, .agenttimeout, .agentstream, .agentsession,
+            .agentchoose, .agentpay, .agentwallet, .agentfilter,
             .block, .unblock, .clear, .hug, .message, .slap, .who
         ]
         if isGeoPublic || isGeoDM {

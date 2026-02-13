@@ -269,13 +269,9 @@ struct ChatViewModelNostrExtensionTests {
         let geohash = "u4pruydq"
         let channel = ChannelID.location(GeohashChannel(level: .city, geohash: geohash))
 
-        LocationChannelManager.shared.select(channel)
-        defer { LocationChannelManager.shared.select(.mesh) }
-
-        _ = await TestHelpers.waitUntil({ LocationChannelManager.shared.selectedChannel == channel })
-
         let (viewModel, _) = makeTestableViewModel()
-        
+        viewModel.switchLocationChannel(to: channel)
+
         _ = await TestHelpers.waitUntil({ viewModel.activeChannel == channel })
         
         var event = NostrEvent(

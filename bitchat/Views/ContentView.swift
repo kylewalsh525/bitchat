@@ -46,9 +46,11 @@ struct ContentView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showSidebar = false
-    @State private var showAgentSettings = false
     @State private var sidebarTab: SidebarTab = .people
     @State private var showAppInfo = false
+    @State private var showSettings = false
+    @State private var settingsDestination: SettingsDestination? = nil
+    @StateObject private var onboardingStore = OnboardingStateStore()
     @State private var showMessageActions = false
     @State private var selectedMessageSender: String?
     @State private var selectedMessageSenderID: PeerID?
@@ -212,17 +214,28 @@ struct ContentView: View {
             peopleSheetView
         }
         .sheet(isPresented: $showAppInfo) {
-            AppInfoView(onOpenAgentSettings: {
+            AppInfoView(onOpenSettings: {
                 showAppInfo = false
-                showAgentSettings = true
+                openSettings()
             })
                 .environmentObject(viewModel)
                 .onAppear { viewModel.isAppInfoPresented = true }
                 .onDisappear { viewModel.isAppInfoPresented = false }
         }
-        .sheet(isPresented: $showAgentSettings) {
-            AgentSettingsView()
+        .sheet(isPresented: $showSettings, onDismiss: {
+            settingsDestination = nil
+        }) {
+            SettingsRootView(initialDestination: settingsDestination)
                 .environmentObject(viewModel)
+        }
+        .sheet(isPresented: Binding(
+            get: { viewModel.isWalletPresented },
+            set: { viewModel.isWalletPresented = $0 }
+        )) {
+            NavigationStack {
+                WalletView()
+                    .environmentObject(viewModel)
+            }
         }
         .sheet(isPresented: Binding(
             get: { viewModel.showingFingerprintFor != nil },
@@ -261,6 +274,28 @@ struct ContentView: View {
             .environmentObject(viewModel)
             .ignoresSafeArea()
         }
+        .fullScreenCover(isPresented: Binding(
+            get: { !onboardingStore.isCompleted },
+            set: { _ in }
+        )) {
+            OnboardingFlowView(
+                store: onboardingStore,
+                onTryAgentDemo: {
+                    messageText = "/agent general hello"
+                    isTextFieldFocused = true
+                },
+                onOpenSettings: {
+                    openSettings()
+                },
+                onLearnMore: {
+                    showAppInfo = true
+                },
+                onOpenWallet: {
+                    viewModel.isWalletPresented = true
+                }
+            )
+            .environmentObject(viewModel)
+        }
 #endif
 #if os(macOS)
         // Only present Mac image picker from main view when NOT in a sheet
@@ -288,6 +323,29 @@ struct ContentView: View {
                 }
             }
             .environmentObject(viewModel)
+        }
+        .sheet(isPresented: Binding(
+            get: { !onboardingStore.isCompleted },
+            set: { _ in }
+        )) {
+            OnboardingFlowView(
+                store: onboardingStore,
+                onTryAgentDemo: {
+                    messageText = "/agent general hello"
+                    isTextFieldFocused = true
+                },
+                onOpenSettings: {
+                    openSettings()
+                },
+                onLearnMore: {
+                    showAppInfo = true
+                },
+                onOpenWallet: {
+                    viewModel.isWalletPresented = true
+                }
+            )
+            .environmentObject(viewModel)
+            .frame(minWidth: 720, minHeight: 520)
         }
 #endif
         .sheet(isPresented: Binding(
@@ -658,6 +716,11 @@ struct ContentView: View {
                     .padding(.horizontal, 6)
             }
 
+            if !viewModel.activeAgentQuoteSelections.isEmpty {
+                agentQuoteSelectionStrip
+                    .padding(.horizontal, 6)
+            }
+
             HStack(alignment: .center, spacing: 4) {
                 TextField(
                     "",
@@ -838,6 +901,99 @@ struct ContentView: View {
             .padding(.vertical, 4)
         }
         .frame(height: 72)
+    }
+
+    @ViewBuilder
+    private var agentQuoteSelectionStrip: some View {
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(viewModel.activeAgentQuoteSelections.prefix(2))) { selection in
+                VStack(alignment: .leading, spacing: 8) {
+                    let remainingMs = selection.expiresAtMs > nowMs ? (selection.expiresAtMs - nowMs) : 0
+                    let expiresIn = max(0, Int(remainingMs / 1_000))
+                    HStack(spacing: 8) {
+                        Text("Quotes for '\(selection.role)' • \(selection.quoteID.prefix(8)) • \(expiresIn)s left")
+                            .font(.bitchatSystem(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(textColor)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Button("Dismiss") {
+                            viewModel.dismissPendingAgentQuote(quoteID: selection.quoteID)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.bitchatSystem(size: 10, design: .monospaced))
+                        .foregroundColor(secondaryTextColor)
+                    }
+
+                    if selection.options.isEmpty {
+                        Text("No quotes yet. Waiting for providers…")
+                            .font(.bitchatSystem(size: 11, design: .monospaced))
+                            .foregroundColor(secondaryTextColor)
+                    } else {
+                        ForEach(Array(selection.options.enumerated()), id: \.element.optionID) { index, option in
+                            Button {
+                                let result = viewModel.selectAgentQuoteOptionFromUI(
+                                    quoteID: selection.quoteID,
+                                    optionID: option.optionID
+                                )
+                                applyQuoteSelectionResult(result)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text("\(index + 1)")
+                                        .font(.bitchatSystem(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(textColor)
+                                        .frame(width: 14)
+
+                                    let waitLabel = option.waitSeconds == 0 ? "now" : "wait ~\(option.waitSeconds)s"
+                                    Text("\(option.peerNickname) q\(option.qualityScore) \(waitLabel) \(option.estimatedPrice) \(option.unit)")
+                                        .font(.bitchatSystem(size: 11, design: .monospaced))
+                                        .foregroundColor(textColor)
+                                        .lineLimit(1)
+
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill((colorScheme == .dark ? Color.white : Color.black).opacity(0.06))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Choose quote option \(index + 1)")
+                            .accessibilityHint("Selects \(option.peerNickname) at \(option.estimatedPrice) \(option.unit)")
+                        }
+                    }
+
+                    Text("/agentchoose \(selection.quoteID) <1-\(selection.options.count)>")
+                        .font(.bitchatSystem(size: 10, design: .monospaced))
+                        .foregroundColor(secondaryTextColor)
+                }
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill((colorScheme == .dark ? Color.white : Color.black).opacity(0.04))
+                )
+            }
+        }
+    }
+
+    private func applyQuoteSelectionResult(_ result: CommandResult) {
+        switch result {
+        case .success(let message):
+            if let message {
+                viewModel.addSystemMessage(message)
+            }
+        case .error(let message):
+            viewModel.addSystemMessage(message)
+        case .handled:
+            break
+        }
+    }
+
+    private func openSettings(destination: SettingsDestination? = nil) {
+        settingsDestination = destination
+        showSettings = true
     }
     // MARK: - Actions
     
@@ -1344,6 +1500,7 @@ struct ContentView: View {
                         Image(systemName: "envelope.fill")
                             .font(.bitchatSystem(size: 12))
                             .foregroundColor(Color.orange)
+                            .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(
@@ -1360,13 +1517,10 @@ struct ContentView: View {
                         notesGeohash = LocationChannelManager.shared.availableChannels.first(where: { $0.level == .building })?.geohash
                         showLocationNotes = true
                     }) {
-                        HStack(alignment: .center, spacing: 4) {
-                            Image(systemName: "note.text")
-                                .font(.bitchatSystem(size: 12))
-                                .foregroundColor(Color.orange.opacity(0.8))
-                                .padding(.top, 1)
-                        }
-                        .fixedSize(horizontal: true, vertical: false)
+                        Image(systemName: "note.text")
+                            .font(.bitchatSystem(size: 12))
+                            .foregroundColor(Color.orange.opacity(0.8))
+                            .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(
@@ -1379,6 +1533,7 @@ struct ContentView: View {
                     Button(action: { bookmarks.toggle(ch.geohash) }) {
                         Image(systemName: bookmarks.isBookmarked(ch.geohash) ? "bookmark.fill" : "bookmark")
                             .font(.bitchatSystem(size: 12))
+                            .frame(width: 44, height: 44)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(
@@ -1420,38 +1575,64 @@ struct ContentView: View {
                 .padding(.leading, 4)
                 .padding(.trailing, 2)
 
-                HStack(spacing: 4) {
-                    // People icon with count
-                    Image(systemName: "person.2.fill")
-                        .font(.system(size: headerPeerIconSize, weight: .regular))
-                        .accessibilityLabel(
-                            String(
-                                format: String(localized: "content.accessibility.people_count", comment: "Accessibility label announcing number of people in header"),
-                                locale: .current,
-                                headerOtherPeersCount
+                Button(action: {
+                    withAnimation(.easeInOut(duration: TransportConfig.uiAnimationMediumSeconds)) {
+                        showSidebar.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        // People icon with count
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: headerPeerIconSize, weight: .regular))
+                            .accessibilityLabel(
+                                String(
+                                    format: String(localized: "content.accessibility.people_count", comment: "Accessibility label announcing number of people in header"),
+                                    locale: .current,
+                                    headerOtherPeersCount
+                                )
                             )
-                        )
-                    Text("\(headerOtherPeersCount)")
-                        .font(.system(size: headerPeerCountFontSize, weight: .regular, design: .monospaced))
-                        .accessibilityHidden(true)
+                        Text("\(headerOtherPeersCount)")
+                            .font(.system(size: headerPeerCountFontSize, weight: .regular, design: .monospaced))
+                            .accessibilityHidden(true)
+                    }
+                    .foregroundColor(headerCountColor)
+                    .padding(.leading, 2)
+                    .lineLimit(headerLineLimit)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
                 }
-                .foregroundColor(headerCountColor)
-                .padding(.leading, 2)
-                .lineLimit(headerLineLimit)
-                .fixedSize(horizontal: true, vertical: false)
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    String(
+                        format: String(localized: "content.accessibility.people_count", comment: "Accessibility label announcing number of people in header"),
+                        locale: .current,
+                        headerOtherPeersCount
+                    )
+                )
+                .accessibilityHint(
+                    String(
+                        localized: "content.accessibility.open_people_sheet_hint",
+                        defaultValue: "Open people and session list",
+                        comment: "Accessibility hint for opening the people sheet"
+                    )
+                )
 
                 // QR moved to the PEOPLE header in the sidebar when on mesh channel
             }
             .layoutPriority(3)
-            .onTapGesture {
-                withAnimation(.easeInOut(duration: TransportConfig.uiAnimationMediumSeconds)) {
-                    showSidebar.toggle()
-                }
-            }
             .sheet(isPresented: $showVerifySheet) {
                 VerificationSheetView(isPresented: $showVerifySheet)
                     .environmentObject(viewModel)
             }
+
+            Button(action: { openSettings() }) {
+                Image(systemName: "gearshape")
+                    .font(.bitchatSystem(size: 12))
+                    .foregroundColor(secondaryTextColor)
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("Settings"))
         }
         .frame(height: headerHeight)
         .padding(.horizontal, 12)

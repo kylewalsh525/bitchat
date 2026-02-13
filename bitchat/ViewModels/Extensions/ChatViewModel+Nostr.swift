@@ -170,7 +170,7 @@ extension ChatViewModel {
             handleDelivered(noisePayload, senderPubkey: senderPubkey, convKey: convKey)
         case .readReceipt:
             handleReadReceipt(noisePayload, senderPubkey: senderPubkey, convKey: convKey)
-        case .verifyChallenge, .verifyResponse, .agentRequest, .agentResponse, .agentResponseChunk:
+        case .verifyChallenge, .verifyResponse, .agentRequest, .agentResponse, .agentResponseChunk, .agentBid, .agentQuote, .agentPaymentPayload, .agentPaymentReceipt, .mintProxyRequest, .mintProxyResponse:
             // QR verification payloads over Nostr are not supported; ignore in geohash DMs
             break
         }
@@ -247,12 +247,15 @@ extension ChatViewModel {
         let filter = NostrFilter.geohashEphemeral(ch.geohash, since: ts, limit: TransportConfig.nostrGeohashInitialLimit)
         let subRelays = GeoRelayDirectory.shared.closestRelays(toGeohash: ch.geohash, count: 5)
         NostrRelayManager.shared.subscribe(filter: filter, id: subID, relayUrls: subRelays) { [weak self] event in
-            self?.handleNostrEvent(event)
+            Task { @MainActor in
+                self?.handleNostrEvent(event)
+            }
         }
 
         subscribeToGeoChat(ch)
     }
     
+    @MainActor
     func handleNostrEvent(_ event: NostrEvent) {
         // Only handle ephemeral kind 20000 or presence kind 20001 with matching tag
         guard (event.kind == NostrProtocol.EventKind.ephemeralEvent.rawValue ||
@@ -287,10 +290,8 @@ extension ChatViewModel {
             // Avoid marking our own key from historical events; rely on manager.teleported for self
             if !isSelf {
                 let key = event.pubkey.lowercased()
-                Task { @MainActor in
-                    teleportedGeo = teleportedGeo.union([key])
-                    SecureLogger.info("GeoTeleport: mark peer teleported key=\(key.prefix(8))… total=\(teleportedGeo.count)", category: .session)
-                }
+                teleportedGeo = teleportedGeo.union([key])
+                SecureLogger.info("GeoTeleport: mark peer teleported key=\(key.prefix(8))… total=\(teleportedGeo.count)", category: .session)
             }
         }
         
@@ -342,11 +343,9 @@ extension ChatViewModel {
             mentions: mentions.isEmpty ? nil : mentions
         )
         
-        Task { @MainActor in
-            handlePublicMessage(msg)
-            checkForMentions(msg)
-            sendHapticFeedback(for: msg)
-        }
+        handlePublicMessage(msg)
+        checkForMentions(msg)
+        sendHapticFeedback(for: msg)
     }
     
     @MainActor
@@ -402,7 +401,7 @@ extension ChatViewModel {
             handleReadReceipt(payload, senderPubkey: senderPubkey, convKey: convKey)
         
         // Explicitly list other cases so we get compile-time check if a new case is added in the future
-        case .verifyChallenge, .verifyResponse, .agentRequest, .agentResponse, .agentResponseChunk:
+        case .verifyChallenge, .verifyResponse, .agentRequest, .agentResponse, .agentResponseChunk, .agentBid, .agentQuote, .agentPaymentPayload, .agentPaymentReceipt, .mintProxyRequest, .mintProxyResponse:
             break
         }
     }
@@ -646,7 +645,7 @@ extension ChatViewModel {
                                 handleDelivered(payload, senderPubkey: senderPubkey, convKey: targetPeerID)
                             case .readReceipt:
                                 handleReadReceipt(payload, senderPubkey: senderPubkey, convKey: targetPeerID)
-                            case .verifyChallenge, .verifyResponse, .agentRequest, .agentResponse, .agentResponseChunk:
+                            case .verifyChallenge, .verifyResponse, .agentRequest, .agentResponse, .agentResponseChunk, .agentBid, .agentQuote, .agentPaymentPayload, .agentPaymentReceipt, .mintProxyRequest, .mintProxyResponse:
                                 break
                             }
                         }

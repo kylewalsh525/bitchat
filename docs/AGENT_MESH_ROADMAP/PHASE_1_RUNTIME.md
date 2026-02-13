@@ -2,13 +2,24 @@
 
 Goal: Replace EchoAgentRuntime with a real runtime and configuration surface.
 
-Status: Partial
+Status: Complete
 - Runtime selection and config surface implemented.
 - Gateway client/runtime implemented.
 - Runtime status exposed via /agentconfig and UI system messages.
-- Dedicated agent setup UI + model discovery pending.
+- Dedicated agent setup UI and manual model discovery are implemented.
+- Requester-side agent routing preferences (min quality + known-model/hash hints) are implemented.
+- Optional richer capability taxonomy/presentation remains iterative.
 
 ## Work Packages
+### P1-COMPAT-1: Payment gating before runtime invocation
+- Goal: Ensure unpaid requests never reach the runtime execution path.
+- Owned files: `bitchat/ViewModels/ChatViewModel.swift`
+- Interfaces:
+  - If `paymentRequired`, halt before runtime invocation and await receipt.
+  - Runtime interfaces remain unchanged.
+- Dependencies: none (wired when Phase 4A payment signals are enabled)
+- Done when: payment gating intercepts requests without modifying runtime APIs.
+
 ### P1-RUNTIME-1: Runtime selection + base protocol
 - Goal: Add a runtime selector without breaking EchoAgentRuntime.
 - Owned files: `bitchat/Services/AgentRuntime.swift`
@@ -64,3 +75,18 @@ Status: Partial
   - Gateway presets for local Ollama / LM Studio (via local gateway)
 - Dependencies: P1-RUNTIME-1, P1-GW-1
 - Done when: users can configure agent without commands and browse available models/roles.
+
+### P1-MODEL-1: Model quality/hash preferences (requester-side)
+- Goal: Allow requesters to prefer known open-source models using `modelHash` mapping that works offline.
+- Owned files: `bitchat/Services/AgentKnownModelCatalog.swift` (new),
+  `bitchat/Services/AgentKnownModelUpdateService.swift` (new),
+  `bitchat/Services/AgentRequesterPreferences.swift` (new),
+  `bitchat/Views/AgentPreferencesView.swift` (new),
+  `bitchat/ViewModels/Extensions/ChatViewModel+AgentRoutingPreferences.swift` (new),
+  `bitchat/ViewModels/ChatViewModel.swift`,
+  `bitchat/ViewModels/Extensions/ChatViewModel+AgentSessions.swift`
+- Interfaces:
+  - `AgentInfo.modelHash` is an artifact digest (`ollama:sha256:<hex>` or `sha256:<hex>`) and is treated as a self-attested claim.
+  - Preferences: `minQualityScore`, `preferKnownModels`, `preferredKnownModelIDs`, `penalizeUnknownModels`
+- Dependencies: none
+- Done when: requesters can set preferences in UI, routing respects preferences, and known model hash mappings can be refreshed once and used offline.

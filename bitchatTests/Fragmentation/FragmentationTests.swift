@@ -126,12 +126,12 @@ struct FragmentationTests {
         let fragments = fragmentPacket(packet, fragmentSize: 4096, pad: false)
         #expect(!fragments.isEmpty)
 
+        // Send sequentially to avoid races in the fragmentation/reassembly pipeline.
         for (i, fragment) in fragments.enumerated() {
-            let delay = 5 * Double(i) * 0.001
-            Task {
-                try await sleep(delay)
-                ble._test_handlePacket(fragment, fromPeerID: remoteID)
+            if i > 0 {
+                try await Task.sleep(for: .milliseconds(5))
             }
+            ble._test_handlePacket(fragment, fromPeerID: remoteID)
         }
 
         try await capture.waitForReceivedMessages(count: 1, timeout: .seconds(2))
@@ -178,16 +178,16 @@ struct FragmentationTests {
             corrupted[0] = p
         }
         
+        // Send sequentially to avoid races in the fragmentation/reassembly pipeline.
         for (i, fragment) in corrupted.enumerated() {
-            let delay = 5 * Double(i) * 0.001
-            Task {
-                try await sleep(delay)
-                ble._test_handlePacket(fragment, fromPeerID: remoteShortID)
+            if i > 0 {
+                try await Task.sleep(for: .milliseconds(5))
             }
+            ble._test_handlePacket(fragment, fromPeerID: remoteShortID)
         }
         
         // Allow async processing
-        try await sleep(0.5)
+        try await Task.sleep(for: .milliseconds(500))
 
         // Should not deliver since one fragment is invalid and reassembly can't complete
         #expect(capture.publicMessages.isEmpty)

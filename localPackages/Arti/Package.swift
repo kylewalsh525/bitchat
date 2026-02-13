@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .library(
             name: "Tor",
+            type: .dynamic,
             targets: ["Tor"]
         ),
     ],

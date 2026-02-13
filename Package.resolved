@@ -1,6 +1,15 @@
 {
   "pins" : [
     {
+      "identity" : "cdk-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/cashubtc/cdk-swift.git",
+      "state" : {
+        "revision" : "b89e72ae08d26748ac52d11aac7576a8d13fef94",
+        "version" : "0.14.3"
+      }
+    },
+    {
       "identity" : "swift-secp256k1",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/21-DOT-DEV/swift-secp256k1",

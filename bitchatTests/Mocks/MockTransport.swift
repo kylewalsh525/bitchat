@@ -35,6 +35,15 @@ final class MockTransport: Transport {
     private(set) var sentReadReceipts: [(receipt: ReadReceipt, peerID: PeerID)] = []
     private(set) var sentDeliveryAcks: [(messageID: String, peerID: PeerID)] = []
     private(set) var sentFavoriteNotifications: [(peerID: PeerID, isFavorite: Bool)] = []
+    private(set) var sentAgentRequests: [(request: AgentRequestPacket, peerID: PeerID)] = []
+    private(set) var sentAgentResponses: [(response: AgentResponsePacket, peerID: PeerID)] = []
+    private(set) var sentAgentResponseChunks: [(chunk: AgentResponseChunkPacket, peerID: PeerID)] = []
+    private(set) var sentAgentQuoteRequests: [(request: AgentQuoteRequestPacket, peerID: PeerID)] = []
+    private(set) var sentAgentQuoteResponses: [(response: AgentQuoteResponsePacket, peerID: PeerID)] = []
+    private(set) var sentAgentPaymentPayloads: [(payload: AgentPaymentPayloadPacket, peerID: PeerID)] = []
+    private(set) var sentAgentPaymentReceipts: [(receipt: AgentPaymentReceiptPacket, peerID: PeerID)] = []
+    private(set) var sentMintProxyRequests: [(request: MintProxyRequestPacket, peerID: PeerID)] = []
+    private(set) var sentMintProxyResponses: [(response: MintProxyResponsePacket, peerID: PeerID)] = []
     private(set) var sentVerifyChallenges: [(peerID: PeerID, noiseKeyHex: String, nonceA: Data)] = []
     private(set) var sentVerifyResponses: [(peerID: PeerID, noiseKeyHex: String, nonceA: Data)] = []
     private(set) var startServicesCallCount = 0
@@ -138,6 +147,42 @@ final class MockTransport: Transport {
         sentDeliveryAcks.append((messageID, peerID))
     }
 
+    func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID) {
+        sentAgentRequests.append((request, peerID))
+    }
+
+    func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID) {
+        sentAgentResponses.append((response, peerID))
+    }
+
+    func sendAgentResponseChunk(_ chunk: AgentResponseChunkPacket, to peerID: PeerID) {
+        sentAgentResponseChunks.append((chunk, peerID))
+    }
+
+    func sendAgentQuoteRequest(_ request: AgentQuoteRequestPacket, to peerID: PeerID) {
+        sentAgentQuoteRequests.append((request, peerID))
+    }
+
+    func sendAgentQuoteResponse(_ response: AgentQuoteResponsePacket, to peerID: PeerID) {
+        sentAgentQuoteResponses.append((response, peerID))
+    }
+
+    func sendAgentPaymentPayload(_ payload: AgentPaymentPayloadPacket, to peerID: PeerID) {
+        sentAgentPaymentPayloads.append((payload, peerID))
+    }
+
+    func sendAgentPaymentReceipt(_ receipt: AgentPaymentReceiptPacket, to peerID: PeerID) {
+        sentAgentPaymentReceipts.append((receipt, peerID))
+    }
+
+    func sendMintProxyRequest(_ request: MintProxyRequestPacket, to peerID: PeerID) {
+        sentMintProxyRequests.append((request, peerID))
+    }
+
+    func sendMintProxyResponse(_ response: MintProxyResponsePacket, to peerID: PeerID) {
+        sentMintProxyResponses.append((response, peerID))
+    }
+
     func sendFileBroadcast(_ packet: BitchatFilePacket, transferId: String) {
         // Not tracked for current tests
     }
@@ -167,6 +212,15 @@ final class MockTransport: Transport {
         sentReadReceipts.removeAll()
         sentDeliveryAcks.removeAll()
         sentFavoriteNotifications.removeAll()
+        sentAgentRequests.removeAll()
+        sentAgentResponses.removeAll()
+        sentAgentResponseChunks.removeAll()
+        sentAgentQuoteRequests.removeAll()
+        sentAgentQuoteResponses.removeAll()
+        sentAgentPaymentPayloads.removeAll()
+        sentAgentPaymentReceipts.removeAll()
+        sentMintProxyRequests.removeAll()
+        sentMintProxyResponses.removeAll()
         sentVerifyChallenges.removeAll()
         sentVerifyResponses.removeAll()
         startServicesCallCount = 0
@@ -239,7 +293,8 @@ final class MockTransport: Transport {
                 nickname: peerNicknames[peerID] ?? "",
                 isConnected: true,
                 noisePublicKey: Data(hexString: peerID.bare),
-                lastSeen: now
+                lastSeen: now,
+                agentInfo: nil
             )
         }
         updatePeerSnapshots(snapshots)

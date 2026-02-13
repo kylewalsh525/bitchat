@@ -272,10 +272,13 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     let keychain: KeychainManagerProtocol
     private let nicknameKey = "bitchat.nickname"
     private let agentConfigKey = "bitchat.agent.config"
+    let agentMemoryAutoRecallKey = "bitchat.agent.memory.autoRecall"
+    let agentMemoryAttachedEntriesKey = "bitchat.agent.memory.attachedEntries"
     // Location channel state (macOS supports manual geohash selection)
     @Published var activeChannel: ChannelID = .mesh
     var geoSubscriptionID: String? = nil
     var geoDmSubscriptionID: String? = nil
+    var settlementGlobalSubscriptionID: String? = nil
     var currentGeohash: String? = nil
     var cachedGeohashIdentity: (geohash: String, identity: NostrIdentity)? = nil // Cache current geohash identity
     var geoNicknames: [String: String] = [:] // pubkeyHex(lowercased) -> nickname
@@ -296,8 +299,14 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     // MARK: - Agent Configuration
     @Published private(set) var agentConfig: AgentConfig = .default
     @Published private(set) var agentRuntimeStatus = AgentRuntimeStatus()
-    private var agentMeshFlags = AgentMeshFeatureFlags.load()
-    private var agentRuntime: AgentRuntime = EchoAgentRuntime()
+    @Published var agentRequesterPreferences: AgentRequesterPreferences = .defaults {
+        didSet {
+            agentRequesterPreferences.save(to: userDefaults)
+            syncX402FeatureFlagForCurrentState()
+        }
+    }
+    var agentMeshFlags = AgentMeshFeatureFlags.load()
+    var agentRuntime: AgentRuntime = EchoAgentRuntime()
     var agentResponseAssembler = AgentResponseAssembler()
     var agentStreamingBuffers: [String: AgentStreamingBuffer] = [:]
     var agentSessionsByThread: [PeerID: AgentSession] = [:]
@@ -305,10 +314,185 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     let agentSessionHistoryLimit = TransportConfig.agentSessionStoreMaxHistoryTurns
     let agentSessionStore = AgentSessionStore()
     @Published var agentSessionHistory: [AgentSessionRecord] = []
+    let agentMemoryStore = AgentMemoryStore()
+    lazy var agentMemoryRecall = AgentMemoryRecall(store: agentMemoryStore)
+    @Published var agentMemoryEntries: [AgentMemoryEntry] = []
+    @Published var selectedAgentMemoryEntryID: String? = nil
+    @Published var selectedAgentMemoryContent: String = ""
+    @Published var agentMemoryAutoRecallEnabled: Bool = false
+    @Published var attachedAgentMemoryEntryIDs: Set<String> = []
+    @Published var agentMemoryLastSavedAt: Date? = nil
     @Published var agentCatalog: AgentCatalog? = nil
     @Published var agentCatalogStatus: AgentCatalogStatus = .idle
     @Published var agentGatewayHealth: AgentGatewayHealth = .idle
     private let agentCatalogService = AgentCatalogService()
+    let knownModelCatalog: AgentKnownModelCatalog
+    let knownModelUpdateService: AgentKnownModelUpdateService
+    let cashuMintAllowlistStore = CashuMintAllowlistStore()
+    let agentPaymentStore = AgentPaymentStore()
+    lazy var agentPaymentLockKeyStore = AgentPaymentLockKeyStore(keychain: keychain)
+    lazy var cashuWalletService = CashuWalletService(keychain: keychain, allowlist: cashuMintAllowlistStore)
+    lazy var cashuMintClient = CashuMintClient()
+    let x402GatewayClient = X402GatewayClient()
+    let thirdwebGuestWalletBridge = ThirdwebGuestWalletBridge()
+    let cashuP2PKService = CashuP2PKService()
+    lazy var agentPaymentBridge = AgentPaymentBridge(
+        wallet: cashuWalletService,
+        mintClient: cashuMintClient,
+        store: agentPaymentStore,
+        lockKeyStore: agentPaymentLockKeyStore,
+        p2pkService: cashuP2PKService,
+        x402GatewayClient: x402GatewayClient,
+        x402Wallet: thirdwebGuestWalletBridge
+    )
+    let agentPaymentNotaryService = AgentPaymentNotaryService()
+    let agentFairExchangeService = AgentFairExchangeService()
+    let agentSettlementGossip = AgentSettlementGossip()
+    let mintGatewayService = MintGatewayService()
+
+    struct AgentPaymentPrompt: Equatable {
+        let requestID: String
+        let sessionID: String?
+        let peerID: PeerID
+        let rail: AgentPaymentRail
+        let paymentRequest: String
+        let paymentID: String
+        let mintURL: String
+        let unit: String
+        let amount: UInt64
+        let settlementMode: AgentSettlementMode
+        let requiresLocking: AgentPaymentLockingMode?
+        let x402ChainID: UInt64?
+        let x402TokenAddress: String?
+        let x402PayTo: String?
+        let x402GatewayURL: String?
+        let expiresAtMs: UInt64
+        let pricingModel: AgentPaymentPriceModel?
+        let trancheIndex: UInt32?
+        let trancheCount: UInt32?
+        let trancheTokenCount: UInt32?
+    }
+
+    struct AgentQuoteSelectionOption: Equatable {
+        let quoteID: String
+        let optionID: String
+        let peerID: PeerID
+        let peerNickname: String
+        let role: String
+        let waitSeconds: UInt16
+        let label: String
+        let estimatedPrice: UInt64
+        let paymentRail: AgentPaymentRail
+        let unit: String
+        let settlementMode: AgentSettlementMode
+        let requiresLocking: AgentPaymentLockingMode?
+        let requestTTLSeconds: UInt32
+        let chainID: UInt64?
+        let tokenAddress: String?
+        let qualityScore: UInt8
+        let modelId: String
+        let modelHash: String?
+    }
+
+    struct AgentQuoteSelectionSummary: Identifiable, Equatable {
+        let quoteID: String
+        let role: String
+        let createdAtMs: UInt64
+        let expiresAtMs: UInt64
+        let options: [AgentQuoteSelectionOption]
+
+        var id: String { quoteID }
+    }
+
+    struct PendingAgentQuoteSelection {
+        let quoteID: String
+        let role: String
+        let prompt: String
+        let promptWithMemory: String
+        let allowAnyRole: Bool
+        let createdAtMs: UInt64
+        let ttlMs: UInt32
+        let draftContextKey: String
+        let draftAttachments: [DraftAttachment]
+        let expectedPeers: Set<PeerID>
+        var respondedPeers: Set<PeerID>
+        var options: [AgentQuoteSelectionOption]
+        var published: Bool
+    }
+
+    struct ProviderQuoteCacheEntry {
+        let peerID: PeerID
+        let role: String
+        let issuedAtMs: UInt64
+        let expiresAtMs: UInt64
+        let optionsByID: [String: AgentQuoteOption]
+    }
+
+    struct PendingInboundPaymentRequest {
+        let request: AgentRequestPacket
+        let peerID: PeerID
+        let session: AgentSession
+        let localInfo: AgentInfo
+        let senderName: String
+        let paymentRequest: String
+    }
+
+    struct ProviderTranchePlan {
+        let request: AgentRequestPacket
+        let peerID: PeerID
+        let session: AgentSession
+        let localInfo: AgentInfo
+        let senderName: String
+        let fullResponse: String
+        let isError: Bool
+        let attachments: [AgentRuntimeAttachment]
+        let trancheTexts: [String]
+        let trancheTokenCounts: [UInt32]
+        let trancheAmounts: [UInt64]
+        var nextTrancheIndex: Int
+        var nextChunkIndex: UInt16
+    }
+
+    struct ProviderFairExchangePlan {
+        let request: AgentRequestPacket
+        let peerID: PeerID
+        let session: AgentSession
+        let localInfo: AgentInfo
+        let senderName: String
+        let paymentRequest: String
+        let paymentID: String
+        let encryptedOffer: String?
+        let unlockToken: String?
+        let runtimeResult: AgentRuntimeResult
+    }
+
+    struct InboundFairExchangeAssembly {
+        let peerID: PeerID
+        let sessionID: String?
+        var segments: [UInt16: String]
+        var finalIndex: UInt16?
+    }
+
+    struct InboundFairExchangeOffer {
+        let peerID: PeerID
+        let sessionID: String?
+        let offer: String
+    }
+
+    struct DeferredAgentResponsePacket {
+        let peerID: PeerID
+        let response: AgentResponsePacket
+    }
+
+    struct DeferredAgentResponseChunk {
+        let peerID: PeerID
+        let chunk: AgentResponseChunkPacket
+    }
+
+    struct PendingMintProxyResponse {
+        let peerID: PeerID
+        let continuation: CheckedContinuation<MintProxyResponsePacket, Error>
+    }
 
     struct AgentRequestContext {
         let role: String
@@ -319,6 +503,8 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let prompt: String
         let attachmentCount: UInt8?
         let senderAlias: String?
+        let quoteID: String?
+        let quoteOptionID: String?
         let draftAttachments: [DraftAttachment]
         let createdAtMs: UInt64
         let ttlMs: UInt32
@@ -326,12 +512,35 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let sentAt: Date
     }
     var pendingAgentRequests: [String: AgentRequestContext] = [:]
+    var pendingInboundPaymentRequests: [String: PendingInboundPaymentRequest] = [:]
+    @Published var pendingAgentPayments: [String: AgentPaymentPrompt] = [:]
+    @Published var activeAgentQuoteSelections: [AgentQuoteSelectionSummary] = []
+    var pendingAgentQuoteSelections: [String: PendingAgentQuoteSelection] = [:]
+    var providerQuoteCache: [String: ProviderQuoteCacheEntry] = [:]
+    var providerTranchePlans: [String: ProviderTranchePlan] = [:]
+    var providerTranchePreparationRequestIDs: Set<String> = []
+    var providerFairExchangePlans: [String: ProviderFairExchangePlan] = [:]
+    var providerFairExchangePreparationRequestIDs: Set<String> = []
+    var inboundFairExchangeAssemblies: [String: InboundFairExchangeAssembly] = [:]
+    var inboundFairExchangeOffers: [String: InboundFairExchangeOffer] = [:]
+    var inboundFairExchangeUnlockTokens: [String: String] = [:]
+    var deferredAgentResponses: [String: DeferredAgentResponsePacket] = [:]
+    var deferredAgentResponseChunks: [String: [DeferredAgentResponseChunk]] = [:]
     var agentResponseTimeouts: [String: Timer] = [:]
     var agentRequestTimeouts: [String: Timer] = [:]
     var agentStreamingTimeouts: [String: Timer] = [:]
+    var agentStreamingPaymentPauseKeys: Set<String> = []
+    var agentQuoteTimers: [String: Timer] = [:]
+    var agentQuoteExpiryTimers: [String: Timer] = [:]
+    var agentPaymentExpiryTimers: [String: Timer] = [:]
+    var inboundPaymentExpiryTimers: [String: Timer] = [:]
     var agentStreamingRetries: Set<String> = []
     private var agentResponseRetries: Set<String> = []
+    var pendingMintProxyResponses: [String: PendingMintProxyResponse] = [:]
     var agentRetryQueue = AgentRetryQueue()
+    var paymentFilter = AgentPaymentFilter()
+    var offlineFinalizationTimer: Timer?
+    var inFlightAgentPaymentRequestIDs: Set<String> = []
 
     struct AgentResponseCacheEntry {
         let response: AgentResponsePacket
@@ -353,7 +562,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     private var pendingAgentAttachmentsByPeerID: [PeerID: [AgentSessionAttachment]] = [:]
 
     private let agentAttachmentWaitTimeoutSeconds: TimeInterval = 180
-    private let agentAttachmentLookbackSeconds: TimeInterval = 120
+    let agentAttachmentLookbackSeconds: TimeInterval = 120
 
     func normalizeSessionID(_ sessionID: String) -> String {
         sessionID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -431,6 +640,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     @Published var isLocationChannelsSheetPresented: Bool = false
     @Published var isAppInfoPresented: Bool = false
     @Published var showScreenshotPrivacyWarning: Bool = false
+    @Published var isWalletPresented: Bool = false
     
     var timelineStore = PublicTimelineStore(
         meshCap: TransportConfig.meshTimelineCap,
@@ -527,12 +737,16 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         keychain: KeychainManagerProtocol,
         idBridge: NostrIdentityBridge,
         identityManager: SecureIdentityStateManagerProtocol,
-        transport: Transport
+        transport: Transport,
+        knownModelCatalog: AgentKnownModelCatalog = AgentKnownModelCatalog(),
+        knownModelUpdateService: AgentKnownModelUpdateService = AgentKnownModelUpdateService()
     ) {
         self.keychain = keychain
         self.idBridge = idBridge
         self.identityManager = identityManager
         self.meshService = transport
+        self.knownModelCatalog = knownModelCatalog
+        self.knownModelUpdateService = knownModelUpdateService
         self.publicMessagePipeline = PublicMessagePipeline()
         
         // Load persisted read receipts
@@ -581,8 +795,10 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         
         loadNickname()
         loadAgentConfig()
+        loadAgentRequesterPreferences()
         loadVerifiedFingerprints()
         refreshAgentSessionHistory()
+        loadAgentMemoryState()
         meshService.delegate = self
         
         // Log startup info
@@ -598,6 +814,8 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         meshService.setNickname(nickname)
         applyAgentConfig()
         applyAgentRuntimeConfig()
+        setupAgentPaymentLifecycle()
+        setupMintGatewayProxyLifecycle()
         
         // Start mesh service immediately
         meshService.startServices()
@@ -629,6 +847,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         // Initialize Nostr relay manager regardless of Tor readiness; connection is controlled elsewhere
         nostrRelayManager = NostrRelayManager.shared
+        setupSettlementGossipLifecycle()
         // Attempt to flush any queued outbox (mesh/Nostr routing will gate appropriately)
         messageRouter.flushAllOutbox()
         // End startup phase after a short delay
@@ -676,6 +895,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                                 self.nostrHandlersSetup = true
                             }
                             self.resubscribeCurrentGeohash()
+                            self.subscribeToSettlementGlobalRoomIfNeeded()
                             // Re-init sampling for regional + bookmarked geohashes after reconnect
                             self.geoChannelCoordinator?.refreshSampling()
                         }
@@ -854,6 +1074,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     // MARK: - Deinitialization
     
     deinit {
+        offlineFinalizationTimer?.invalidate()
+        for timer in agentQuoteTimers.values { timer.invalidate() }
+        for timer in agentQuoteExpiryTimers.values { timer.invalidate() }
         // No need to force UserDefaults synchronization
     }
 
@@ -905,6 +1128,12 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         } else {
             agentConfig = .default
         }
+        syncX402FeatureFlagForCurrentState()
+    }
+
+    private func loadAgentRequesterPreferences() {
+        agentRequesterPreferences = AgentRequesterPreferences.load(from: userDefaults)
+        syncX402FeatureFlagForCurrentState()
     }
 
     private func saveAgentConfig() {
@@ -955,9 +1184,43 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     @MainActor
     func updateAgentConfig(_ next: AgentConfig) {
         agentConfig = next
+        syncX402FeatureFlagForCurrentState()
         saveAgentConfig()
         applyAgentConfig()
         applyAgentRuntimeConfig()
+    }
+
+    private func syncX402FeatureFlagForCurrentState() {
+        var flags = AgentMeshFeatureFlags.load(from: userDefaults)
+        let providerNeedsX402 = agentConfig.paymentTerms?.sanitized()?.paymentRail == .x402
+        let requesterNeedsX402 = agentRequesterPreferences.allowX402Payments
+        let shouldEnable = providerNeedsX402 || requesterNeedsX402
+        guard flags.enableX402Payments != shouldEnable else {
+            agentMeshFlags = flags
+            return
+        }
+        flags.enableX402Payments = shouldEnable
+        flags.save(to: userDefaults)
+        agentMeshFlags = flags
+    }
+
+    // MARK: - Agent Memory
+
+    @MainActor
+    func loadAgentMemoryState() {
+        let autoRecall = userDefaults.object(forKey: agentMemoryAutoRecallKey) as? Bool ?? false
+        let attached = userDefaults.array(forKey: agentMemoryAttachedEntriesKey) as? [String] ?? []
+        agentMemoryAutoRecallEnabled = autoRecall
+        attachedAgentMemoryEntryIDs = Set(attached)
+        refreshAgentMemoryEntries()
+        if selectedAgentMemoryEntryID == nil {
+            selectedAgentMemoryEntryID = agentMemoryEntries.first?.id
+        }
+        if let selected = selectedAgentMemoryEntryID {
+            selectedAgentMemoryContent = (try? agentMemoryStore.readEntry(id: selected)) ?? ""
+        } else {
+            selectedAgentMemoryContent = ""
+        }
     }
     
     // MARK: - Favorites Management
@@ -1200,8 +1463,8 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         // Check for commands
         if content.hasPrefix("/") {
-            if content.hasPrefix("/agent") {
-                pendingAgentDraftAttachments = takeDraftAttachments(for: selectedPrivateChatPeer)
+            if trimmed == "/agent" || trimmed.hasPrefix("/agent ") {
+                stashPendingAgentDraftAttachmentsForCommand()
             }
             Task { @MainActor in
                 handleCommand(content)
@@ -1597,6 +1860,32 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         return list
     }
 
+    @MainActor
+    func stashPendingAgentDraftAttachmentsForCommand() {
+        pendingAgentDraftAttachments = takeDraftAttachments(for: selectedPrivateChatPeer)
+    }
+
+    @MainActor
+    func pendingAgentDraftContextKeyForCommand() -> String {
+        draftKey(for: selectedPrivateChatPeer)
+    }
+
+    @MainActor
+    func takePendingAgentDraftAttachments() -> [DraftAttachment] {
+        let attachments = pendingAgentDraftAttachments
+        pendingAgentDraftAttachments = []
+        return attachments
+    }
+
+    @MainActor
+    func restorePendingAgentDraftAttachments(_ attachments: [DraftAttachment], to contextKey: String) {
+        guard !attachments.isEmpty else { return }
+        var existing = draftAttachmentsByContext[contextKey] ?? []
+        existing.append(contentsOf: attachments)
+        draftAttachmentsByContext[contextKey] = existing
+        objectWillChange.send()
+    }
+
 
 
     @MainActor
@@ -1870,6 +2159,11 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     
     @MainActor
     @objc private func appDidBecomeActive() {
+        setupAgentPaymentLifecycle()
+        Task { [weak self] in
+            await self?.agentPaymentBridge.finalizePendingOfflinePayments()
+        }
+
         // Check Bluetooth state and show alert if needed
         if let bleService = meshService as? BLEService {
             let currentState = bleService.getCurrentBluetoothState()
@@ -2190,81 +2484,197 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     // PANIC: Emergency data clearing for activist safety
     @MainActor
     func panicClearAllData() {
-        // Messages are processed immediately - nothing to flush
-        
-        // Clear all messages
-        messages.removeAll()
-        privateChatManager.privateChats.removeAll()
-        privateChatManager.unreadMessages.removeAll()
-        
-        // Delete all keychain data (including Noise and Nostr keys)
-        _ = keychain.deleteAllKeychainData()
-        
-        // Clear UserDefaults identity data
-        userDefaults.removeObject(forKey: "bitchat.noiseIdentityKey")
-        userDefaults.removeObject(forKey: "bitchat.messageRetentionKey")
-        
-        // Clear verified fingerprints
-        verifiedFingerprints.removeAll()
-        // Verified fingerprints are cleared when identity data is cleared below
-        
-        // Reset nickname to anonymous
-        nickname = "anon\(Int.random(in: 1000...9999))"
-        saveNickname()
-        
-        // Clear favorites and peer mappings
-        // Clear through SecureIdentityStateManager instead of directly
-        identityManager.clearAllIdentityData()
-        peerIDToPublicKeyFingerprint.removeAll()
-        
-        // Clear persistent favorites from keychain
-        FavoritesPersistenceService.shared.clearAllFavorites()
-        
-        // Identity manager has cleared persisted identity data above
-        
-        // Clear autocomplete state
-        autocompleteSuggestions.removeAll()
+        // Messages are processed immediately - nothing to flush.
+
+        // Generate a fresh nickname for the next identity.
+        let freshNickname = "anon\(Int.random(in: 1000...9999))"
+
+        // Stop timers/async state first so nothing re-persists during the wipe.
+        offlineFinalizationTimer?.invalidate()
+        offlineFinalizationTimer = nil
+
+        func invalidateAll<K>(_ timers: inout [K: Timer]) {
+            for (_, timer) in timers {
+                timer.invalidate()
+            }
+            timers.removeAll(keepingCapacity: false)
+        }
+
+        invalidateAll(&agentResponseTimeouts)
+        invalidateAll(&agentRequestTimeouts)
+        invalidateAll(&agentStreamingTimeouts)
+        invalidateAll(&agentQuoteTimers)
+        invalidateAll(&agentQuoteExpiryTimers)
+        invalidateAll(&agentPaymentExpiryTimers)
+        invalidateAll(&inboundPaymentExpiryTimers)
+
+        // Clear in-flight agent/payment state.
+        pendingAgentRequests.removeAll(keepingCapacity: false)
+        pendingInboundPaymentRequests.removeAll(keepingCapacity: false)
+        pendingAgentPayments.removeAll(keepingCapacity: false)
+        activeAgentQuoteSelections.removeAll(keepingCapacity: false)
+        pendingAgentQuoteSelections.removeAll(keepingCapacity: false)
+        providerQuoteCache.removeAll(keepingCapacity: false)
+        providerTranchePlans.removeAll(keepingCapacity: false)
+        providerTranchePreparationRequestIDs.removeAll(keepingCapacity: false)
+        providerFairExchangePlans.removeAll(keepingCapacity: false)
+        providerFairExchangePreparationRequestIDs.removeAll(keepingCapacity: false)
+        inboundFairExchangeAssemblies.removeAll(keepingCapacity: false)
+        inboundFairExchangeOffers.removeAll(keepingCapacity: false)
+        inboundFairExchangeUnlockTokens.removeAll(keepingCapacity: false)
+        deferredAgentResponses.removeAll(keepingCapacity: false)
+        deferredAgentResponseChunks.removeAll(keepingCapacity: false)
+        agentResponseCache.removeAll(keepingCapacity: false)
+        agentStreamingBuffers.removeAll(keepingCapacity: false)
+        agentStreamingPaymentPauseKeys.removeAll(keepingCapacity: false)
+        agentStreamingRetries.removeAll(keepingCapacity: false)
+        agentResponseRetries.removeAll(keepingCapacity: false)
+        inFlightAgentPaymentRequestIDs.removeAll(keepingCapacity: false)
+        agentResponseAssembler = AgentResponseAssembler()
+        agentRetryQueue = AgentRetryQueue()
+        paymentFilter = AgentPaymentFilter()
+        draftAttachmentsByContext.removeAll(keepingCapacity: false)
+        pendingAgentDraftAttachments.removeAll(keepingCapacity: false)
+        pendingAgentAttachmentsBySessionID.removeAll(keepingCapacity: false)
+        pendingAgentAttachmentsByPeerID.removeAll(keepingCapacity: false)
+
+        // Clear timeline + message buffers.
+        messages.removeAll(keepingCapacity: false)
+        timelineStore = PublicTimelineStore(meshCap: TransportConfig.meshTimelineCap, geohashCap: TransportConfig.geoTimelineCap)
+        lastPublicActivityAt.removeAll(keepingCapacity: false)
+        publicMessagePipeline.reset()
+        participantTracker.clear()
+        teleportedGeo.removeAll(keepingCapacity: false)
+        geoSamplingSubs.removeAll(keepingCapacity: false)
+        lastGeoNotificationAt.removeAll(keepingCapacity: false)
+        transferIdToMessageIDs.removeAll(keepingCapacity: false)
+        messageIDToTransferId.removeAll(keepingCapacity: false)
+
+        // Clear private chats.
+        privateChatManager.privateChats.removeAll(keepingCapacity: false)
+        privateChatManager.unreadMessages.removeAll(keepingCapacity: false)
+        privateChats.removeAll(keepingCapacity: false)
+        unreadPrivateMessages.removeAll(keepingCapacity: false)
+
+        // Clear autocomplete state.
+        autocompleteSuggestions.removeAll(keepingCapacity: false)
         showAutocomplete = false
         autocompleteRange = nil
         selectedAutocompleteIndex = 0
-        
-        // Clear selected private chat
+
+        // Clear selected private chat.
         selectedPrivateChatPeer = nil
         selectedPrivateChatFingerprint = nil
-        
-        // Clear read receipt tracking
-        sentReadReceipts.removeAll()
+
+        // Clear read receipt tracking.
+        sentReadReceipts.removeAll(keepingCapacity: false)
         deduplicationService.clearAll()
 
-        // Clear all caches
+        // Clear all caches.
         invalidateEncryptionCache()
-        
-        // IMPORTANT: Clear Nostr-related state
-        // Disconnect from Nostr relays and clear subscriptions
+        encryptionStatusCache.removeAll(keepingCapacity: false)
+        peerEncryptionStatus.removeAll(keepingCapacity: false)
+
+        // Clear Nostr-related state and network connections.
+        cancelPendingMintProxyResponses(reason: "panic wipe")
+        unsubscribeFromSettlementGlobalRoom()
         nostrRelayManager?.disconnect()
         nostrRelayManager = nil
-        
-        // Clear Nostr identity associations
+        TorManager.shared.shutdownCompletely()
+
+        // Clear Nostr identity associations.
         idBridge.clearAllAssociations()
-        
-        // Disconnect from all peers and clear persistent identity
-        // This will force creation of a new identity (new fingerprint) on next launch
+        nostrKeyMapping.removeAll(keepingCapacity: false)
+        geoSubscriptionID = nil
+        geoDmSubscriptionID = nil
+        settlementGlobalSubscriptionID = nil
+        currentGeohash = nil
+        cachedGeohashIdentity = nil
+        geoNicknames.removeAll(keepingCapacity: false)
+        geoChannelCoordinator = nil
+        torStatusAnnounced = false
+        torRestartPending = false
+        torInitialReadyAnnounced = false
+        nostrHandlersSetup = false
+
+        // Wipe all keychain data (Noise/Nostr identity + wallet proofs + lock keys).
+        _ = keychain.deleteAllKeychainData()
+
+        // Wipe agent/payment persistence and in-memory stores.
+        agentPaymentStore.wipeAll()
+        agentPaymentLockKeyStore.wipeAllBindings()
+        cashuWalletService.wipeAllWallet()
+        Task { await thirdwebGuestWalletBridge.resetWallet() }
+        cashuMintAllowlistStore.setAllowed([])
+        agentPaymentNotaryService.reset()
+        agentSettlementGossip.reset()
+        Task { await SupportEventLog.shared.clear() }
+
+        agentSessionStore.wipeAllSessions()
+        agentSessionsByThread.removeAll(keepingCapacity: false)
+        agentThreadsBySessionID.removeAll(keepingCapacity: false)
+        agentSessionHistory.removeAll(keepingCapacity: false)
+
+        agentMemoryStore.wipeAllMemory()
+        agentMemoryEntries.removeAll(keepingCapacity: false)
+        selectedAgentMemoryEntryID = nil
+        selectedAgentMemoryContent = ""
+        agentMemoryAutoRecallEnabled = false
+        attachedAgentMemoryEntryIDs.removeAll(keepingCapacity: false)
+        agentMemoryLastSavedAt = nil
+
+        agentCatalog = nil
+        agentCatalogStatus = .idle
+        agentGatewayHealth = .idle
+
+        // Clear identity-related persistence and peer mappings.
+        identityManager.clearAllIdentityData()
+        verifiedFingerprints.removeAll(keepingCapacity: false)
+        showingFingerprintFor = nil
+        peerIDToPublicKeyFingerprint.removeAll(keepingCapacity: false)
+        FavoritesPersistenceService.shared.clearAllFavorites()
+
+        // Clear UserDefaults (app + app-group) last, then re-seed minimal state.
+        let allDefaultKeys = Array(userDefaults.dictionaryRepresentation().keys)
+        for key in allDefaultKeys {
+            userDefaults.removeObject(forKey: key)
+        }
+        if let groupDefaults = UserDefaults(suiteName: BitchatApp.groupID) {
+            let groupKeys = Array(groupDefaults.dictionaryRepresentation().keys)
+            for key in groupKeys {
+                groupDefaults.removeObject(forKey: key)
+            }
+        }
+
+        // Persist fresh nickname without sending an announce from the old identity.
+        nickname = freshNickname
+        userDefaults.set(nickname, forKey: nicknameKey)
+
+        // Reset channel state back to mesh.
+        activeChannel = .mesh
+        LocationChannelManager.shared.select(.mesh)
+
+        // Reset requester/provider config to defaults (after UserDefaults wipe).
+        agentRequesterPreferences = .defaults
+        updateAgentConfig(.default)
+        agentRuntimeStatus = AgentRuntimeStatus()
+
+        // Disconnect from all peers and reset identity.
+        // BLEService will generate a new Noise identity and restart services.
         meshService.emergencyDisconnectAll()
         if let bleService = meshService as? BLEService {
             bleService.resetIdentityForPanic(currentNickname: nickname)
         }
-        
-        // No need to force UserDefaults synchronization
-        
-        // Reinitialize Nostr with new identity
-        // This will generate new Nostr keys derived from new Noise keys
+
+        // Reinitialize Nostr with the new identity.
+        // This will generate new Nostr keys derived from new Noise keys.
         Task { @MainActor in
-            // Small delay to ensure cleanup completes
+            // Small delay to ensure cleanup completes.
             try? await Task.sleep(nanoseconds: TransportConfig.uiAsyncShortSleepNs) // 0.1 seconds
-            
-            // Reinitialize Nostr relay manager with new identity
+
             nostrRelayManager = NostrRelayManager()
             setupNostrMessageHandling()
+            setupSettlementGossipLifecycle()
             nostrRelayManager?.connect()
         }
         
@@ -2273,11 +2683,18 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             do {
                 let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let filesDir = base.appendingPathComponent("files", isDirectory: true)
+                let appDir = base.appendingPathComponent("bitchat", isDirectory: true)
 
                 // Delete the entire files directory and recreate it
                 if FileManager.default.fileExists(atPath: filesDir.path) {
                     try FileManager.default.removeItem(at: filesDir)
                     SecureLogger.info("🗑️ Deleted all media files during panic clear", category: .session)
+                }
+
+                // Delete app support directory used for caches/stores (agent stores, Tor state, relay caches).
+                if FileManager.default.fileExists(atPath: appDir.path) {
+                    try FileManager.default.removeItem(at: appDir)
+                    SecureLogger.info("🗑️ Deleted app support caches during panic clear", category: .session)
                 }
 
                 // Recreate empty directory structure
@@ -3275,6 +3692,30 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     /// - Note: Supports commands like /nick, /msg, /who, /slap, /clear, /help
     @MainActor
     private func handleCommand(_ command: String) {
+        if let quoteResult = handleAgentChooseCommand(command) {
+            switch quoteResult {
+            case .success(let message):
+                if let message { addSystemMessage(message) }
+            case .error(let message):
+                addSystemMessage(message)
+            case .handled:
+                break
+            }
+            return
+        }
+
+        if let paymentResult = handleAgentPayCommand(command) {
+            switch paymentResult {
+            case .success(let message):
+                if let message { addSystemMessage(message) }
+            case .error(let message):
+                addSystemMessage(message)
+            case .handled:
+                break
+            }
+            return
+        }
+
         let result = commandProcessor.process(command)
         
         switch result {
@@ -3414,7 +3855,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         return taken
     }
 
-    private func awaitAgentAttachments(sessionID: String, peerID: PeerID, expected: Int, since: Date) async -> [AgentSessionAttachment] {
+    func awaitAgentAttachments(sessionID: String, peerID: PeerID, expected: Int, since: Date) async -> [AgentSessionAttachment] {
         guard expected > 0 else { return [] }
         let sessionKey = normalizeSessionID(sessionID)
         let deadline = Date().addingTimeInterval(agentAttachmentWaitTimeoutSeconds)
@@ -3440,7 +3881,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         }
     }
 
-    private func makeRuntimeAttachments(from attachments: [AgentSessionAttachment]) -> [AgentRuntimeAttachment] {
+    func makeRuntimeAttachments(from attachments: [AgentSessionAttachment]) -> [AgentRuntimeAttachment] {
         attachments.compactMap { attachment in
             guard let data = try? Data(contentsOf: attachment.url) else { return nil }
             guard FileTransferLimits.isValidPayload(data.count) else { return nil }
@@ -3545,6 +3986,24 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             case .agentResponseChunk:
                 guard let chunk = AgentResponseChunkPacket.decode(from: payload) else { return }
                 handleAgentResponseChunk(chunk, from: peerID)
+            case .agentPaymentPayload:
+                guard let paymentPayload = AgentPaymentPayloadPacket.decode(from: payload) else { return }
+                handleAgentPaymentPayload(paymentPayload, from: peerID)
+            case .agentPaymentReceipt:
+                guard let receipt = AgentPaymentReceiptPacket.decode(from: payload) else { return }
+                handleAgentPaymentReceipt(receipt, from: peerID)
+            case .mintProxyRequest:
+                guard let request = MintProxyRequestPacket.decode(from: payload) else { return }
+                handleMintProxyRequest(request, from: peerID)
+            case .mintProxyResponse:
+                guard let response = MintProxyResponsePacket.decode(from: payload) else { return }
+                handleMintProxyResponse(response, from: peerID)
+            case .agentBid:
+                guard let quoteRequest = AgentQuoteRequestPacket.decode(from: payload) else { return }
+                handleAgentQuoteRequest(quoteRequest, from: peerID)
+            case .agentQuote:
+                guard let quoteResponse = AgentQuoteResponsePacket.decode(from: payload) else { return }
+                handleAgentQuoteResponse(quoteResponse, from: peerID)
             case .verifyChallenge:
                 // Parse and respond
                 guard let tlv = VerificationService.shared.parseVerifyChallenge(payload) else { return }
@@ -3708,6 +4167,36 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             return
         }
 
+        let hasPendingInboundPayment = pendingInboundPaymentRequests[request.requestID] != nil
+        let quoteValidation = hasPendingInboundPayment
+            ? (amount: Optional<UInt64>.none, waitSeconds: UInt16(0), error: Optional<String>.none)
+            : quotedAmountOverrideValidation(request: request, from: peerID)
+        if let quoteError = quoteValidation.error {
+            let response = AgentResponsePacket(
+                requestID: request.requestID,
+                content: "invalid quote selection",
+                isError: true,
+                sessionID: session.sessionID,
+                chunkIndex: nil,
+                chunkTotal: nil,
+                paymentRequired: false,
+                paymentRequest: nil,
+                paymentError: quoteError
+            )
+            addAgentResponseDM(
+                requestID: response.requestID,
+                role: localInfo.role,
+                content: response.content,
+                peerID: session.threadID,
+                peerNickname: senderName,
+                outgoing: true,
+                isError: true
+            )
+            sendAgentResponseChunks(response, to: peerID)
+            AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: true))
+            return
+        }
+
         let requestWithSession = AgentRequestPacket(
             requestID: request.requestID,
             role: request.role,
@@ -3716,123 +4205,113 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             attachmentCount: request.attachmentCount,
             senderAlias: senderAlias,
             createdAtMs: createdAtMs,
-            ttlMs: ttlMs
+            ttlMs: ttlMs,
+            quoteID: request.quoteID,
+            quoteOptionID: request.quoteOptionID
         )
-        Task { [weak self, agentRuntime, localInfo, updatedSession] in
-            guard let self else { return }
-            let expected = Int(request.attachmentCount ?? 0)
-            let requestStart = Date().addingTimeInterval(-self.agentAttachmentLookbackSeconds)
-            let pendingAttachments = expected > 0
-                ? await self.awaitAgentAttachments(
-                    sessionID: updatedSession.sessionID,
-                    peerID: peerID,
-                    expected: expected,
-                    since: requestStart
+        if shouldRequireAgentPayment(localInfo: localInfo) {
+            if let pending = pendingInboundPaymentRequests[request.requestID] {
+                let hasEncryptedOffer = providerFairExchangePlans[request.requestID]?.encryptedOffer != nil
+                sendPaymentRequiredResponse(
+                    requestID: request.requestID,
+                    role: localInfo.role,
+                    peerID: pending.peerID,
+                    sessionID: pending.session.sessionID,
+                    threadID: pending.session.threadID,
+                    senderName: pending.senderName,
+                    paymentRequest: pending.paymentRequest,
+                    hasEncryptedOffer: hasEncryptedOffer
                 )
-                : []
-            if expected > 0, pendingAttachments.count < expected {
-                await MainActor.run {
-                    let message = "missing attachments (\(pendingAttachments.count)/\(expected)); please retry"
+                if let plan = providerFairExchangePlans[request.requestID] {
+                    sendProviderFairExchangeOfferChunks(plan)
+                }
+                return
+            }
+
+            guard let paymentTerms = localInfo.paymentTerms?.sanitized() else {
+                let response = AgentResponsePacket(
+                    requestID: request.requestID,
+                    content: "payment unavailable",
+                    isError: true,
+                    sessionID: session.sessionID,
+                    chunkIndex: nil,
+                    chunkTotal: nil,
+                    paymentRequired: false,
+                    paymentRequest: nil,
+                    paymentError: "failed to build payment request"
+                )
+                addAgentResponseDM(
+                    requestID: response.requestID,
+                    role: localInfo.role,
+                    content: response.content,
+                    peerID: session.threadID,
+                    peerNickname: senderName,
+                    outgoing: true,
+                    isError: true
+                )
+                sendAgentResponseChunks(response, to: peerID)
+                return
+            }
+
+            if paymentTerms.usesPerTokenPricing {
+                if quoteValidation.amount != nil {
                     let response = AgentResponsePacket(
                         requestID: request.requestID,
-                        content: message,
+                        content: "quote option incompatible with per-token pricing",
                         isError: true,
-                        sessionID: updatedSession.sessionID,
+                        sessionID: session.sessionID,
                         chunkIndex: nil,
-                        chunkTotal: nil
+                        chunkTotal: nil,
+                        paymentRequired: false,
+                        paymentRequest: nil,
+                        paymentError: "quote option incompatible with current provider pricing"
                     )
-                    self.addAgentResponseDM(
+                    addAgentResponseDM(
                         requestID: response.requestID,
                         role: localInfo.role,
-                        content: message,
-                        peerID: updatedSession.threadID,
+                        content: response.content,
+                        peerID: session.threadID,
                         peerNickname: senderName,
                         outgoing: true,
                         isError: true
                     )
-                    self.sendAgentResponseChunks(response, to: peerID)
-                    AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: true))
+                    sendAgentResponseChunks(response, to: peerID)
+                    return
                 }
-                return
-            }
-
-            let runtimeAttachments = self.makeRuntimeAttachments(from: pendingAttachments)
-            if self.agentConfig.runtime.streamResponses, let streamingRuntime = agentRuntime as? StreamingAgentRuntime {
-                var assembled = ""
-                var isError = false
-                let stream = streamingRuntime.runStream(
+                startPerTokenTranchePreparation(
                     request: requestWithSession,
                     from: peerID,
                     localInfo: localInfo,
                     session: updatedSession,
-                    attachments: runtimeAttachments
+                    senderName: senderName,
+                    terms: paymentTerms
                 )
-                for await chunk in stream {
-                    assembled += chunk.content
-                    isError = isError || chunk.isError
-                    let outbound = AgentResponseChunkPacket(
-                        requestID: request.requestID,
-                        index: chunk.index,
-                        isFinal: chunk.isFinal,
-                        content: chunk.content,
-                        isError: chunk.isError,
-                        sessionID: updatedSession.sessionID
-                    )
-                    await MainActor.run {
-                        self.meshService.sendAgentResponseChunk(outbound, to: peerID)
-                    }
-                    if chunk.isFinal {
-                        await MainActor.run {
-                            let response = AgentResponsePacket(
-                                requestID: request.requestID,
-                                content: assembled,
-                                isError: isError,
-                                sessionID: updatedSession.sessionID,
-                                chunkIndex: nil,
-                                chunkTotal: nil
-                            )
-                            let role = localInfo.role
-                            self.appendAgentSessionHistory(sessionID: updatedSession.sessionID, role: "assistant", content: assembled)
-                            self.addAgentResponseDM(
-                                requestID: response.requestID,
-                                role: role,
-                                content: response.content,
-                                peerID: updatedSession.threadID,
-                                peerNickname: senderName,
-                                outgoing: true,
-                                isError: response.isError
-                            )
-                            self.cacheAgentResponseIfNeeded(response, attachments: [])
-                            AgentMeshLogger.log(.responseSent(requestID: response.requestID, peerID: peerID, isError: response.isError))
-                        }
-                    }
-                }
                 return
             }
 
-            let result = await agentRuntime.run(request: requestWithSession, from: peerID, localInfo: localInfo, session: updatedSession, attachments: runtimeAttachments)
-            await MainActor.run {
-                let role = localInfo.role
-                self.appendAgentSessionHistory(sessionID: updatedSession.sessionID, role: "assistant", content: result.response.content)
-                self.addAgentResponseDM(
-                    requestID: result.response.requestID,
-                    role: role,
-                    content: result.response.content,
-                    peerID: updatedSession.threadID,
-                    peerNickname: senderName,
-                    outgoing: true,
-                    isError: result.response.isError
-                )
-                self.sendAgentResponseChunks(result.response, to: peerID)
-                self.sendAgentAttachments(result.attachments, session: updatedSession)
-                self.cacheAgentResponseIfNeeded(result.response, attachments: result.attachments)
-                AgentMeshLogger.log(.responseSent(requestID: result.response.requestID, peerID: peerID, isError: result.response.isError))
-            }
+            startPerRequestFairExchangePreparation(
+                request: requestWithSession,
+                from: peerID,
+                localInfo: localInfo,
+                session: updatedSession,
+                senderName: senderName,
+                terms: paymentTerms,
+                quotedAmountOverride: quoteValidation.amount
+            )
+            return
         }
+
+        runAgentRequestWithRuntime(
+            request: requestWithSession,
+            from: peerID,
+            localInfo: localInfo,
+            session: updatedSession,
+            senderName: senderName
+        )
     }
 
     @MainActor
-    private func handleAgentResponse(_ response: AgentResponsePacket, from peerID: PeerID) {
+    func handleAgentResponse(_ response: AgentResponsePacket, from peerID: PeerID) {
         let context = pendingAgentRequests[response.requestID]
         cancelAgentRequestRetry(requestID: response.requestID)
         if let context {
@@ -3859,6 +4338,22 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             return session.threadID
         }()
 
+        if response.paymentRequired {
+            handlePaymentRequiredResponse(
+                response: response,
+                from: peerID,
+                role: role,
+                agentName: agentName,
+                threadID: threadID
+            )
+            return
+        }
+
+        if pendingAgentPayments[response.requestID] != nil {
+            deferredAgentResponses[response.requestID] = DeferredAgentResponsePacket(peerID: peerID, response: response)
+            return
+        }
+
         if let chunkIndex = response.chunkIndex, let chunkTotal = response.chunkTotal {
             if let assembled = agentResponseAssembler.append(
                 requestID: response.requestID,
@@ -3870,6 +4365,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             ) {
                 cancelAgentResponseTimeout(requestID: response.requestID, sessionID: sessionID)
                 _ = pendingAgentRequests.removeValue(forKey: response.requestID)
+                pendingAgentPayments.removeValue(forKey: response.requestID)
+                clearDeferredAgentResponses(for: response.requestID)
+                cancelPaymentPromptExpiry(requestID: response.requestID)
                 addAgentResponseDM(
                     requestID: response.requestID,
                     role: role,
@@ -3894,6 +4392,9 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         cancelAgentResponseTimeout(requestID: response.requestID, sessionID: sessionID)
         _ = pendingAgentRequests.removeValue(forKey: response.requestID)
+        pendingAgentPayments.removeValue(forKey: response.requestID)
+        clearDeferredAgentResponses(for: response.requestID)
+        cancelPaymentPromptExpiry(requestID: response.requestID)
         addAgentResponseDM(
             requestID: response.requestID,
             role: role,
@@ -3978,6 +4479,12 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     func didReceivePublicMessage(from peerID: PeerID, nickname: String, content: String, timestamp: Date, messageID: String?) {
         Task { @MainActor in
             let normalized = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if handleNotaryMeshPublicMessageIfNeeded(content: normalized, from: peerID) {
+                return
+            }
+            if handleSettlementMeshPublicMessageIfNeeded(content: normalized, from: peerID) {
+                return
+            }
             let publicMentions = parseMentions(from: normalized)
             let msg = BitchatMessage(
                 id: messageID,
@@ -4515,6 +5022,11 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         guard !trimmedRole.isEmpty, !trimmedPrompt.isEmpty else {
             return .error(message: "usage: /agent <role> <prompt>")
         }
+        let memoryContext = buildAgentMemoryContext(for: trimmedPrompt)
+        let promptWithMemory: String = {
+            guard !memoryContext.context.isEmpty else { return trimmedPrompt }
+            return memoryContext.context + "\n\nUser prompt:\n" + trimmedPrompt
+        }()
 
         // Allow targeting a specific nickname with /agent @name ...
         if trimmedRole.hasPrefix("@") {
@@ -4523,15 +5035,14 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                 let requestID = UUID().uuidString
                 let alias = "anon-\(UUID().uuidString.prefix(8))"
                 let session = startAgentSession(peerID: peer.peerID, role: "direct", peerNickname: alias)
-                let draftAttachments = pendingAgentDraftAttachments
-                pendingAgentDraftAttachments = []
+                let draftAttachments = takePendingAgentDraftAttachments()
                 let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
                 let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
                 let ttlMs = TransportConfig.agentRequestTTLms
                 let request = AgentRequestPacket(
                     requestID: requestID,
                     role: "direct",
-                    prompt: trimmedPrompt,
+                    prompt: promptWithMemory,
                     sessionID: session.sessionID,
                     attachmentCount: attachmentCount,
                     senderAlias: session.senderAlias,
@@ -4544,9 +5055,11 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                     targetNickname: session.peerNickname,
                     sessionID: session.sessionID,
                     threadID: session.threadID,
-                    prompt: trimmedPrompt,
+                    prompt: promptWithMemory,
                     attachmentCount: attachmentCount,
                     senderAlias: session.senderAlias,
+                    quoteID: nil,
+                    quoteOptionID: nil,
                     draftAttachments: draftAttachments,
                     createdAtMs: createdAtMs,
                     ttlMs: ttlMs,
@@ -4578,28 +5091,39 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         let normalizedRole = trimmedRole.lowercased()
         let allowAnyRole = normalizedRole == "any" || normalizedRole == "*"
-        let candidates = allPeers.filter { peer in
-            guard let info = peer.agentInfo else { return false }
-            return allowAnyRole || info.normalizedRole == normalizedRole
+
+        if let quoteResult = beginAgentQuoteSelectionIfNeeded(
+            role: normalizedRole,
+            prompt: trimmedPrompt,
+            promptWithMemory: promptWithMemory,
+            allowAnyRole: allowAnyRole
+        ) {
+            return quoteResult
         }
-        let reachable = candidates.filter { $0.isConnected || $0.isReachable }
-        guard let target = reachable.sorted(by: agentSort).first else {
-            return .error(message: "no reachable agents for role '\(trimmedRole)'")
+
+        guard let target = selectAgentCandidate(role: normalizedRole, allowAnyRole: allowAnyRole, minimumQuality: 0) else {
+            if !paymentFilter.isAny {
+                return .error(
+                    message: "No providers found for role '\(trimmedRole)' with filter (\(paymentFilter.description)). Try again or adjust Settings > Agents > Requester preferences."
+                )
+            }
+            return .error(
+                message: "No providers found for role '\(trimmedRole)'. Wait for agent announces nearby or try another role."
+            )
         }
 
         let requestID = UUID().uuidString
         let requestRole = allowAnyRole ? (target.agentInfo?.role ?? normalizedRole) : normalizedRole
         let alias = "anon-\(UUID().uuidString.prefix(8))"
         let session = startAgentSession(peerID: target.peerID, role: requestRole, peerNickname: alias)
-        let draftAttachments = pendingAgentDraftAttachments
-        pendingAgentDraftAttachments = []
+        let draftAttachments = takePendingAgentDraftAttachments()
         let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
         let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let ttlMs = TransportConfig.agentRequestTTLms
         let request = AgentRequestPacket(
             requestID: requestID,
             role: requestRole,
-            prompt: trimmedPrompt,
+            prompt: promptWithMemory,
             sessionID: session.sessionID,
             attachmentCount: attachmentCount,
             senderAlias: session.senderAlias,
@@ -4612,9 +5136,11 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             targetNickname: session.peerNickname,
             sessionID: session.sessionID,
             threadID: session.threadID,
-            prompt: trimmedPrompt,
+            prompt: promptWithMemory,
             attachmentCount: attachmentCount,
             senderAlias: session.senderAlias,
+            quoteID: nil,
+            quoteOptionID: nil,
             draftAttachments: draftAttachments,
             createdAtMs: createdAtMs,
             ttlMs: ttlMs,
@@ -4642,21 +5168,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         return .success(message: nil)
     }
 
-    private func agentSort(_ lhs: BitchatPeer, _ rhs: BitchatPeer) -> Bool {
-        if lhs.isConnected != rhs.isConnected { return lhs.isConnected }
-        if lhs.isReachable != rhs.isReachable { return lhs.isReachable }
-        let lq = lhs.agentInfo?.qualityScore ?? 0
-        let rq = rhs.agentInfo?.qualityScore ?? 0
-        if lq != rq { return lq > rq }
-        return lhs.displayName < rhs.displayName
-    }
-    
-
-    
-
-    
-
-    
+ 
     // MARK: - Base64URL utils
     static func base64URLDecode(_ s: String) -> Data? {
         var str = s.replacingOccurrences(of: "-", with: "+")

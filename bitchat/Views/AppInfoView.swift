@@ -4,6 +4,8 @@ struct AppInfoView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.colorScheme) var colorScheme
     var onOpenAgentSettings: (() -> Void)? = nil
+    var onOpenAgentPreferences: (() -> Void)? = nil
+    var onOpenSettings: (() -> Void)? = nil
     
     private var backgroundColor: Color {
         colorScheme == .dark ? Color.black : Color.white
@@ -15,6 +17,13 @@ struct AppInfoView: View {
     
     private var secondaryTextColor: Color {
         colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
+    }
+
+    private var settingsAction: (() -> Void)? {
+        if let onOpenSettings { return onOpenSettings }
+        if let onOpenAgentSettings { return onOpenAgentSettings }
+        if let onOpenAgentPreferences { return onOpenAgentPreferences }
+        return nil
     }
     
     // MARK: - Constants
@@ -146,9 +155,9 @@ struct AppInfoView: View {
                     .font(.bitchatSystem(size: 16, design: .monospaced))
                     .foregroundColor(secondaryTextColor)
 
-                if let onOpenAgentSettings {
-                    Button(action: onOpenAgentSettings) {
-                        Text("Agent setup")
+                if let settingsAction {
+                    Button(action: settingsAction) {
+                        Text("Open settings")
                             .font(.bitchatSystem(size: 12, design: .monospaced))
                             .foregroundColor(textColor)
                             .padding(.vertical, 6)

@@ -2,10 +2,11 @@
 
 Goal: Add TTL, idempotency, and retry behavior for intermittent mesh links.
 
-Status: Done
+Status: Complete
 - Added request TTL + createdAt TLVs for expiry.
 - Added retry queue with reconnect flushing and max retries.
 - Added response idempotency cache + resend.
+- Added deterministic unit tests for TTL expiry, retry behavior, idempotency resend, and payment prompt expiry.
 
 ## Work Packages
 ### P2-PROTOCOL-1: TTL and createdAt TLVs
@@ -46,3 +47,32 @@ Status: Done
   - `cachedAgentResponse(for:)`
 - Dependencies: P2-RETRY-1
 - Done when: duplicate request IDs resend cached responses.
+
+### P2-PAY-1: Payment request TTL + expiry
+- Goal: Enforce payment request expiry using `requestTTLSeconds`.
+- Owned files: `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshPayments.swift`
+- Interfaces:
+  - Clear pending payment state on expiry.
+  - Surface “payment expired” error for the request.
+- Dependencies: P4-MARKET-1
+- Delivery note: co-deliver with Phase 4A payment request handling.
+- Done when: expired payment requests are rejected and removed locally.
+
+### P2-PAY-2: Payment idempotency + replay controls
+- Goal: Prevent replay or duplicate payment acceptance.
+- Owned files: `bitchat/Services/AgentPaymentStore.swift`
+- Interfaces:
+  - Dedupe by `requestID + paymentID + nullifiers`.
+  - Reject payloads reused across different requestIDs.
+- Dependencies: P4-STORE-1
+- Delivery note: co-deliver with Phase 4A payment store rollout.
+- Done when: duplicate payloads are rejected deterministically.
+
+### P2-PAY-3: Retry policy for payment packets
+- Goal: Define retry behavior for payment payloads and receipts.
+- Owned files: `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshPayments.swift`
+- Interfaces:
+  - Payment payloads are never auto-resent.
+  - Receipts may be resent idempotently on reconnect.
+- Dependencies: P2-PAY-2
+- Done when: payment retries follow strict idempotency rules.

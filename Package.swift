@@ -18,7 +18,8 @@ let package = Package(
     dependencies:[
         .package(path: "localPackages/Arti"),
         .package(path: "localPackages/BitLogger"),
-        .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1", exact: "0.21.1")
+        .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1", exact: "0.21.1"),
+        .package(url: "https://github.com/cashubtc/cdk-swift.git", exact: "0.14.3")
     ],
     targets: [
         .executableTarget(
@@ -26,19 +27,25 @@ let package = Package(
             dependencies: [
                 .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "BitLogger", package: "BitLogger"),
-                .product(name: "Tor", package: "Arti")
+                .product(name: "Tor", package: "Arti"),
+                .product(name: "CashuDevKit", package: "cdk-swift")
             ],
             path: "bitchat",
             exclude: [
                 "Info.plist",
                 "Assets.xcassets",
                 "bitchat.entitlements",
+                "bitchat.noappgroups.entitlements",
                 "bitchat-macOS.entitlements",
+                "bitchat-macOS.noappgroups.entitlements",
                 "LaunchScreen.storyboard",
                 "ViewModels/Extensions/README.md"
             ],
             resources: [
                 .process("Localizable.xcstrings")
+            ],
+            linkerSettings: [
+                .linkedFramework("SystemConfiguration")
             ]
         ),
         .testTarget(

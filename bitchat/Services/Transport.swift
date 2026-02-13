@@ -58,6 +58,12 @@ protocol Transport: AnyObject {
     func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID)
     func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID)
     func sendAgentResponseChunk(_ chunk: AgentResponseChunkPacket, to peerID: PeerID)
+    func sendAgentQuoteRequest(_ request: AgentQuoteRequestPacket, to peerID: PeerID)
+    func sendAgentQuoteResponse(_ response: AgentQuoteResponsePacket, to peerID: PeerID)
+    func sendAgentPaymentPayload(_ payload: AgentPaymentPayloadPacket, to peerID: PeerID)
+    func sendAgentPaymentReceipt(_ receipt: AgentPaymentReceiptPacket, to peerID: PeerID)
+    func sendMintProxyRequest(_ request: MintProxyRequestPacket, to peerID: PeerID)
+    func sendMintProxyResponse(_ response: MintProxyResponsePacket, to peerID: PeerID)
 
     // QR verification (optional for transports)
     func sendVerifyChallenge(to peerID: PeerID, noiseKeyHex: String, nonceA: Data)
@@ -77,6 +83,12 @@ extension Transport {
     func sendAgentRequest(_ request: AgentRequestPacket, to peerID: PeerID) {}
     func sendAgentResponse(_ response: AgentResponsePacket, to peerID: PeerID) {}
     func sendAgentResponseChunk(_ chunk: AgentResponseChunkPacket, to peerID: PeerID) {}
+    func sendAgentQuoteRequest(_ request: AgentQuoteRequestPacket, to peerID: PeerID) {}
+    func sendAgentQuoteResponse(_ response: AgentQuoteResponsePacket, to peerID: PeerID) {}
+    func sendAgentPaymentPayload(_ payload: AgentPaymentPayloadPacket, to peerID: PeerID) {}
+    func sendAgentPaymentReceipt(_ receipt: AgentPaymentReceiptPacket, to peerID: PeerID) {}
+    func sendMintProxyRequest(_ request: MintProxyRequestPacket, to peerID: PeerID) {}
+    func sendMintProxyResponse(_ response: MintProxyResponsePacket, to peerID: PeerID) {}
 
     func sendMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date) {
         sendMessage(content, mentions: mentions)

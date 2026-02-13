@@ -2,7 +2,9 @@
 
 Goal: Make agent selection rely on verifiable claims, not self-declared scores.
 
-Status: Not started
+Status: Deferred
+Note: This phase is intentionally out-of-scope right now. We are shipping without reputation/trust mechanisms
+until a dedicated privacy-first design pass is completed and explicitly approved.
 
 ## Work Packages
 ### P5-PROTOCOL-1: Trust attestation TLV
@@ -21,7 +23,7 @@ Status: Not started
 - Interfaces:
   - `verify(attestation) -> TrustScore`
   - `TrustScore` used by routing
-- Dependencies: P5-PROTOCOL-1
+- Dependencies: P5-PROTOCOL-1; soft: deferred payment reputation milestone (optional later input)
 - Done when: routing can prefer trusted agents.
 
 ### P5-ROUTING-1: Trust-weighted selection
@@ -29,5 +31,5 @@ Status: Not started
 - Owned files: `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshRouting.swift` (new)
 - Interfaces:
   - Score formula: `reachability > trust > quality > recency`
-- Dependencies: P5-STORE-1
+- Dependencies: P5-STORE-1; soft: deferred payment reputation milestone (optional later input)
 - Done when: routing logs show trust-influenced decisions.

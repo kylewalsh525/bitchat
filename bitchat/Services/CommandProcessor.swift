@@ -227,7 +227,23 @@ final class CommandProcessor {
                 runtime += " gateway=unknown"
             }
         }
-        let message = "agent \(status): role=\(config.role) model=\(config.modelId) quality=\(config.qualityScore)\(hash) \(runtime)"
+        let paymentSummary: String = {
+            guard let terms = config.paymentTerms?.sanitized() else { return "payments=off" }
+            if terms.paymentRail == .x402 {
+                let chain = terms.x402ChainID.map { "eip155:\($0)" } ?? "unknown"
+                let token = terms.x402TokenAddress ?? "unknown"
+                return "payments=x402 per_request=\(terms.pricePerRequest) \(terms.unit) chain=\(chain) token=\(token) mode=\(terms.settlementMode.rawValue)"
+            }
+            if terms.usesPerTokenPricing {
+                let input = terms.pricePerInputToken ?? 0
+                let output = terms.pricePerOutputToken ?? 0
+                return "payments=\(terms.paymentRail.rawValue) per_token in=\(input) out=\(output) gran=\(terms.effectiveGranularityTokens) \(terms.unit) mode=\(terms.settlementMode.rawValue)"
+            }
+            return "payments=\(terms.paymentRail.rawValue) per_request=\(terms.pricePerRequest) \(terms.unit) mode=\(terms.settlementMode.rawValue)"
+        }()
+        let notary = config.notaryPolicy
+        let notarySummary = "notary=node:\(notary.isNotaryCapable ? "on" : "off") k=\(notary.effectiveRequiredOfflineSignatures) timeout=\(notary.effectiveCollectTimeoutMs)ms"
+        let message = "agent \(status): role=\(config.role) model=\(config.modelId) quality=\(config.qualityScore)\(hash) \(runtime) \(paymentSummary) \(notarySummary)"
         return .success(message: message)
     }
 

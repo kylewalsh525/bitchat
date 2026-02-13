@@ -114,6 +114,12 @@ final class BLEService: NSObject {
     private var centralManager: CBCentralManager?
     private var peripheralManager: CBPeripheralManager?
     private var characteristic: CBMutableCharacteristic?
+
+    /// Whether the BLE transport is allowed to actively scan/advertise.
+    /// This stays `false` until `startServices()` is called, which also keeps SwiftPM test runs
+    /// from touching Bluetooth privacy-gated APIs.
+    /// - Important: Access on `bleQueue` only.
+    private var servicesEnabled: Bool = false
     
     // MARK: - Identity
     
@@ -296,33 +302,9 @@ final class BLEService: NSObject {
         // Tag BLE queue for re-entrancy detection
         bleQueue.setSpecific(key: bleQueueKey, value: ())
 
-        // Initialize BLE on background queue to prevent main thread blocking
-        // This prevents app freezes during BLE operations
-        #if os(iOS)
-        let centralOptions: [String: Any] = [
-            CBCentralManagerOptionRestoreIdentifierKey: BLEService.centralRestorationID
-        ]
-        centralManager = CBCentralManager(delegate: self, queue: bleQueue, options: centralOptions)
-
-        let peripheralOptions: [String: Any] = [
-            CBPeripheralManagerOptionRestoreIdentifierKey: BLEService.peripheralRestorationID
-        ]
-        peripheralManager = CBPeripheralManager(delegate: self, queue: bleQueue, options: peripheralOptions)
-        #else
-        centralManager = CBCentralManager(delegate: self, queue: bleQueue)
-        peripheralManager = CBPeripheralManager(delegate: self, queue: bleQueue)
-        #endif
-        
-        // Single maintenance timer for all periodic tasks (dispatch-based for determinism)
-        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
-        timer.schedule(deadline: .now() + TransportConfig.bleMaintenanceInterval,
-                       repeating: TransportConfig.bleMaintenanceInterval,
-                       leeway: .seconds(TransportConfig.bleMaintenanceLeewaySeconds))
-        timer.setEventHandler { [weak self] in
-            self?.performMaintenance()
-        }
-        timer.resume()
-        maintenanceTimer = timer
+        // Initialize CoreBluetooth lazily in `startServices()` so unit tests can exercise packet
+        // handling without triggering Bluetooth privacy enforcement (SwiftPM test runners do not
+        // have an Info.plist for usage descriptions).
 
         // Publish initial empty state
         requestPeerDataPublish()
@@ -362,8 +344,10 @@ final class BLEService: NSObject {
         maintenanceTimer?.cancel()
         scanDutyTimer?.cancel()
         scanDutyTimer = nil
-        centralManager?.stopScan()
-        peripheralManager?.stopAdvertising()
+        if servicesEnabled {
+            centralManager?.stopScan()
+            peripheralManager?.stopAdvertising()
+        }
         #if os(iOS)
         NotificationCenter.default.removeObserver(self)
         #endif
@@ -515,12 +499,23 @@ final class BLEService: NSObject {
     // MARK: Lifecycle
     
     func startServices() {
-        // Start BLE services if not already running
-        if centralManager?.state == .poweredOn {
-            centralManager?.scanForPeripherals(
-                withServices: [BLEService.serviceUUID],
-                options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
-            )
+        // Flip on via the BLE queue so delegate callbacks see the update consistently.
+        bleQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.servicesEnabled = true
+
+            self.ensureBluetoothManagersCreated()
+            self.ensureMaintenanceTimerStarted()
+
+            // Central role: scan once powered on.
+            if self.centralManager?.state == .poweredOn {
+                self.startScanning()
+            }
+
+            // Peripheral role: ensure our service is registered and advertising.
+            if let peripheral = self.peripheralManager, peripheral.state == .poweredOn {
+                self.ensurePeripheralServiceAndAdvertising(peripheral)
+            }
         }
         
         // Send initial announce after services are ready
@@ -529,8 +524,54 @@ final class BLEService: NSObject {
             self?.sendAnnounce(forceSend: true)
         }
     }
+
+    /// Creates the CoreBluetooth managers if needed. Must be called on `bleQueue`.
+    private func ensureBluetoothManagersCreated() {
+        if centralManager != nil && peripheralManager != nil { return }
+
+        // Initialize BLE on background queue to prevent main thread blocking.
+        // Creating these objects is privacy-gated by platform; callers must ensure they have the
+        // necessary Info.plist usage strings in app builds.
+        #if os(iOS)
+        let centralOptions: [String: Any] = [
+            CBCentralManagerOptionRestoreIdentifierKey: BLEService.centralRestorationID
+        ]
+        centralManager = CBCentralManager(delegate: self, queue: bleQueue, options: centralOptions)
+
+        let peripheralOptions: [String: Any] = [
+            CBPeripheralManagerOptionRestoreIdentifierKey: BLEService.peripheralRestorationID
+        ]
+        peripheralManager = CBPeripheralManager(delegate: self, queue: bleQueue, options: peripheralOptions)
+        #else
+        centralManager = CBCentralManager(delegate: self, queue: bleQueue)
+        peripheralManager = CBPeripheralManager(delegate: self, queue: bleQueue)
+        #endif
+    }
+
+    /// Starts the periodic maintenance timer if needed. Must be called on `bleQueue`.
+    private func ensureMaintenanceTimerStarted() {
+        guard maintenanceTimer == nil else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: bleQueue)
+        timer.schedule(
+            deadline: .now() + TransportConfig.bleMaintenanceInterval,
+            repeating: TransportConfig.bleMaintenanceInterval,
+            leeway: .seconds(TransportConfig.bleMaintenanceLeewaySeconds)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.performMaintenance()
+        }
+        timer.resume()
+        maintenanceTimer = timer
+    }
     
     func stopServices() {
+        // Disable before interacting with CoreBluetooth, to prevent late delegate callbacks
+        // from restarting scanning/advertising.
+        bleQueue.sync {
+            servicesEnabled = false
+        }
+
         // Send leave message synchronously to ensure delivery
         let leavePacket = BitchatPacket(
             type: MessageType.leave.rawValue,
@@ -756,6 +797,66 @@ final class BLEService: NSObject {
             return
         }
         var payload = Data([NoisePayloadType.agentResponseChunk.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendAgentQuoteRequest(_ request: AgentQuoteRequestPacket, to peerID: PeerID) {
+        guard let tlv = request.encode() else {
+            SecureLogger.error("❌ Failed to encode agent quote request", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentBid.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendAgentQuoteResponse(_ response: AgentQuoteResponsePacket, to peerID: PeerID) {
+        guard let tlv = response.encode() else {
+            SecureLogger.error("❌ Failed to encode agent quote response", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentQuote.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendAgentPaymentPayload(_ paymentPayload: AgentPaymentPayloadPacket, to peerID: PeerID) {
+        guard let tlv = paymentPayload.encode() else {
+            SecureLogger.error("❌ Failed to encode agent payment payload", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentPaymentPayload.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendAgentPaymentReceipt(_ receipt: AgentPaymentReceiptPacket, to peerID: PeerID) {
+        guard let tlv = receipt.encode() else {
+            SecureLogger.error("❌ Failed to encode agent payment receipt", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.agentPaymentReceipt.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendMintProxyRequest(_ request: MintProxyRequestPacket, to peerID: PeerID) {
+        guard let tlv = request.encode() else {
+            SecureLogger.error("❌ Failed to encode mint proxy request", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.mintProxyRequest.rawValue])
+        payload.append(tlv)
+        sendNoisePayload(payload, to: peerID)
+    }
+
+    func sendMintProxyResponse(_ response: MintProxyResponsePacket, to peerID: PeerID) {
+        guard let tlv = response.encode() else {
+            SecureLogger.error("❌ Failed to encode mint proxy response", category: .session)
+            return
+        }
+        var payload = Data([NoisePayloadType.mintProxyResponse.rawValue])
         payload.append(tlv)
         sendNoisePayload(payload, to: peerID)
     }
@@ -1717,6 +1818,10 @@ extension BLEService: CBCentralManagerDelegate {
             self.delegate?.didUpdateBluetoothState(central.state)
         }
 
+        // Don't touch privacy-gated Bluetooth APIs until explicitly started (tests run via SwiftPM
+        // do not have an Info.plist to satisfy Bluetooth usage descriptions).
+        guard servicesEnabled else { return }
+
         switch central.state {
         case .poweredOn:
             // Start scanning - use allow duplicates for faster discovery when active
@@ -1765,6 +1870,7 @@ extension BLEService: CBCentralManagerDelegate {
     }
     
     private func startScanning() {
+        guard servicesEnabled else { return }
         guard let central = centralManager,
               central.state == .poweredOn,
               !central.isScanning else { return }
@@ -1783,6 +1889,38 @@ extension BLEService: CBCentralManagerDelegate {
         )
         
         // Started BLE scanning
+    }
+
+    /// Ensures our peripheral-role GATT service is registered and advertising is active.
+    /// Must be called on `bleQueue`.
+    private func ensurePeripheralServiceAndAdvertising(_ peripheral: CBPeripheralManager) {
+        guard servicesEnabled else { return }
+        guard peripheral.state == .poweredOn else { return }
+
+        // If we're already advertising with a configured characteristic, keep the existing service
+        // to avoid disrupting subscribed centrals.
+        if characteristic != nil, peripheral.isAdvertising {
+            return
+        }
+
+        // Remove all services first to ensure clean state.
+        peripheral.removeAllServices()
+
+        // Create characteristic.
+        characteristic = CBMutableCharacteristic(
+            type: BLEService.characteristicUUID,
+            properties: [.notify, .write, .writeWithoutResponse, .read],
+            value: nil,
+            permissions: [.readable, .writeable]
+        )
+
+        // Create service.
+        let service = CBMutableService(type: BLEService.serviceUUID, primary: true)
+        service.characteristics = [characteristic!]
+
+        // Add service (advertising will start in `didAdd`).
+        SecureLogger.debug("🔧 Adding BLE service...", category: .session)
+        peripheral.add(service)
     }
     
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
@@ -2383,26 +2521,12 @@ extension BLEService: CBPeripheralManagerDelegate {
     func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
         SecureLogger.debug("📡 Peripheral manager state: \(peripheral.state.rawValue)", category: .session)
 
+        // Don't touch privacy-gated Bluetooth APIs until explicitly started.
+        guard servicesEnabled else { return }
+
         switch peripheral.state {
         case .poweredOn:
-            // Remove all services first to ensure clean state
-            peripheral.removeAllServices()
-
-            // Create characteristic
-            characteristic = CBMutableCharacteristic(
-                type: BLEService.characteristicUUID,
-                properties: [.notify, .write, .writeWithoutResponse, .read],
-                value: nil,
-                permissions: [.readable, .writeable]
-            )
-
-            // Create service
-            let service = CBMutableService(type: BLEService.serviceUUID, primary: true)
-            service.characteristics = [characteristic!]
-
-            // Add service (advertising will start in didAdd delegate)
-            SecureLogger.debug("🔧 Adding BLE service...", category: .session)
-            peripheral.add(service)
+            ensurePeripheralServiceAndAdvertising(peripheral)
 
         case .poweredOff:
             // Bluetooth was turned off - clean up peripheral state
@@ -2466,7 +2590,7 @@ extension BLEService: CBPeripheralManagerDelegate {
 
         captureBluetoothStatus(context: "peripheral-restore")
 
-        if peripheral.state == .poweredOn && !peripheral.isAdvertising {
+        if servicesEnabled && peripheral.state == .poweredOn && !peripheral.isAdvertising {
             peripheral.startAdvertising(buildAdvertisementData())
         }
     }
@@ -2477,6 +2601,8 @@ extension BLEService: CBPeripheralManagerDelegate {
             SecureLogger.error("❌ Failed to add service: \(error.localizedDescription)", category: .session)
             return
         }
+
+        guard servicesEnabled else { return }
         
         SecureLogger.debug("✅ Service added successfully, starting advertising", category: .session)
         
@@ -4300,6 +4426,36 @@ extension BLEService {
                 let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
                 notifyUI { [weak self] in
                     self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentResponseChunk, payload: Data(payloadData), timestamp: ts)
+                }
+            case .agentBid:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentBid, payload: Data(payloadData), timestamp: ts)
+                }
+            case .agentQuote:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentQuote, payload: Data(payloadData), timestamp: ts)
+                }
+            case .agentPaymentPayload:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentPaymentPayload, payload: Data(payloadData), timestamp: ts)
+                }
+            case .agentPaymentReceipt:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .agentPaymentReceipt, payload: Data(payloadData), timestamp: ts)
+                }
+            case .mintProxyRequest:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .mintProxyRequest, payload: Data(payloadData), timestamp: ts)
+                }
+            case .mintProxyResponse:
+                let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)
+                notifyUI { [weak self] in
+                    self?.delegate?.didReceiveNoisePayload(from: peerID, type: .mintProxyResponse, payload: Data(payloadData), timestamp: ts)
                 }
             case .verifyChallenge:
                 let ts = Date(timeIntervalSince1970: Double(packet.timestamp) / 1000)

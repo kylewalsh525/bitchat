@@ -2,11 +2,15 @@ MARKETING_VERSION = 1.5.1
 CURRENT_PROJECT_VERSION = 1
 
 IPHONEOS_DEPLOYMENT_TARGET = 16.0
-MACOSX_DEPLOYMENT_TARGET = 13.0
+// CashuDevKit's macOS binary artifacts are built with a 14.5 minimum.
+MACOSX_DEPLOYMENT_TARGET = 14.5
 SWIFT_VERSION = 5.0
 
 DEVELOPMENT_TEAM =
 CODE_SIGN_STYLE = Automatic
+
+// CashuDevKit (cdkFFI) uses SystemConfiguration on macOS (whoami crate).
+OTHER_LDFLAGS = $(inherited) -framework SystemConfiguration
 
 APP_BUNDLE_ID = chat.bitchat
 PRODUCT_BUNDLE_IDENTIFIER = $(APP_BUNDLE_ID)

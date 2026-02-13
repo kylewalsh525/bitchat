@@ -109,6 +109,12 @@ enum NoisePayloadType: UInt8 {
     case agentRequest = 0x20        // Agent request payload
     case agentResponse = 0x21       // Agent response payload
     case agentResponseChunk = 0x22  // Agent response streaming chunk payload
+    case agentBid = 0x23            // Agent quote request payload
+    case agentPaymentPayload = 0x24 // Agent payment payload
+    case agentPaymentReceipt = 0x25 // Agent payment receipt
+    case mintProxyRequest = 0x26    // Mint proxy request
+    case mintProxyResponse = 0x27   // Mint proxy response
+    case agentQuote = 0x28          // Agent quote response payload
     // Verification (QR-based OOB binding)
     case verifyChallenge = 0x10     // Verification challenge
     case verifyResponse  = 0x11     // Verification response
@@ -121,6 +127,12 @@ enum NoisePayloadType: UInt8 {
         case .agentRequest: return "agentRequest"
         case .agentResponse: return "agentResponse"
         case .agentResponseChunk: return "agentResponseChunk"
+        case .agentBid: return "agentQuoteRequest"
+        case .agentPaymentPayload: return "agentPaymentPayload"
+        case .agentPaymentReceipt: return "agentPaymentReceipt"
+        case .mintProxyRequest: return "mintProxyRequest"
+        case .mintProxyResponse: return "mintProxyResponse"
+        case .agentQuote: return "agentQuoteResponse"
         case .verifyChallenge: return "verifyChallenge"
         case .verifyResponse: return "verifyResponse"
         }

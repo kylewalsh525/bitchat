@@ -1,49 +1,95 @@
 # Agent Mesh Implementation Guide
 
-This document maps the codebase to the agent mesh feature and explains how to
-extend it safely.
+This document maps the codebase to the agent mesh feature and explains how to extend it safely.
 
 ## Code Map (Key Files)
 - Models:
-  - bitchat/Models/AgentInfo.swift
-  - bitchat/Models/BitchatPeer.swift
-  - bitchat/Models/CommandInfo.swift
-  - bitchat/Models/AgentSession.swift
+  - `bitchat/Models/AgentInfo.swift`
+  - `bitchat/Models/AgentSession.swift`
+  - `bitchat/Models/AgentSessionAttachment.swift`
+  - `bitchat/Models/AgentRuntimeStatus.swift`
 - Protocol:
-  - bitchat/Protocols/BitchatProtocol.swift
-  - bitchat/Protocols/Packets.swift
-  - bitchat/Protocols/AgentMeshConstants.swift
-- Transport:
-  - bitchat/Services/Transport.swift
-  - bitchat/Services/BLE/BLEService.swift
-  - bitchat/Services/UnifiedPeerService.swift
-- Runtime:
-  - bitchat/Services/AgentRuntime.swift
-  - bitchat/Services/AgentGatewayClient.swift
-  - bitchat/Services/GatewayAgentRuntime.swift
-  - bitchat/Services/AgentMeshFeatureFlags.swift
-  - bitchat/Services/AgentMeshLogger.swift
-  - bitchat/Services/AgentMeshChunker.swift
-  - bitchat/Services/AgentResponseAssembler.swift
-- ViewModel:
-  - bitchat/ViewModels/ChatViewModel.swift
-  - bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshUI.swift
-  - bitchat/ViewModels/Extensions/ChatViewModel+AgentSessions.swift
-  - bitchat/ViewModels/Extensions/ChatViewModel+PrivateChat.swift
+  - `bitchat/Protocols/AgentMeshConstants.swift`
+  - `bitchat/Protocols/BitchatProtocol.swift`
+  - `bitchat/Protocols/Packets.swift`
+- Core services:
+  - `bitchat/Services/AgentCatalogService.swift`
+  - `bitchat/Services/AgentKnownModelCatalog.swift`
+  - `bitchat/Services/AgentKnownModelUpdateService.swift`
+  - `bitchat/Services/AgentRequesterPreferences.swift`
+  - `bitchat/Services/AgentRuntime.swift`
+  - `bitchat/Services/AgentGatewayClient.swift`
+  - `bitchat/Services/GatewayAgentRuntime.swift`
+  - `bitchat/Services/AgentMeshFeatureFlags.swift`
+  - `bitchat/Services/AgentMeshLogger.swift`
+  - `bitchat/Services/AgentRetryQueue.swift`
+  - `bitchat/Services/AgentMeshChunker.swift`
+  - `bitchat/Services/AgentResponseAssembler.swift`
+  - `bitchat/Services/AgentSessionStore.swift`
+  - `bitchat/Services/AgentMemoryStore.swift`
+  - `bitchat/Services/AgentMemoryRecall.swift`
+- Payment services:
+  - `bitchat/Services/AgentPaymentBridge.swift`
+  - `bitchat/Services/AgentPaymentStore.swift`
+  - `bitchat/Services/AgentPaymentLockKeyStore.swift`
+  - `bitchat/Services/AgentPaymentFilter.swift`
+  - `bitchat/Services/AgentPaymentNotaryService.swift`
+  - `bitchat/Services/AgentFairExchangeService.swift`
+  - `bitchat/Services/AgentSettlementGossip.swift`
+  - `bitchat/Services/CashuModels.swift`
+  - `bitchat/Services/CashuP2PKService.swift`
+  - `bitchat/Services/CashuWalletService.swift`
+  - `bitchat/Services/CashuMintClient.swift`
+  - `bitchat/Services/X402Models.swift`
+  - `bitchat/Services/X402GatewayClient.swift`
+  - `bitchat/Services/ThirdwebGuestWalletBridge.swift`
+  - `bitchat/Services/MintGatewayService.swift`
+- ViewModel entrypoints:
+  - `bitchat/ViewModels/ChatViewModel.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshRequests.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshStreaming.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshPayments.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshQuotes.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentSessions.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMemory.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentRoutingPreferences.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshUI.swift`
 - UI:
-  - bitchat/Views/MeshPeerList.swift
-  - bitchat/Services/AutocompleteService.swift
-  - bitchat/Models/AgentRuntimeStatus.swift
-  - scripts/agent_gateway_proxy.py
-  - bitchat/Models/AgentSessionAttachment.swift
+  - `bitchat/Views/Settings/SettingsRootView.swift`
+  - `bitchat/Views/Settings/RequesterPreferencesSettingsView.swift`
+  - `bitchat/Views/Wallet/WalletView.swift`
+  - `bitchat/Views/Wallet/MintAllowlistView.swift`
+  - `bitchat/Views/Onboarding/OnboardingFlowView.swift`
+  - `bitchat/Views/Onboarding/ProviderSetupWizardView.swift`
+  - `bitchat/Views/AgentSettingsView.swift`
+  - `bitchat/Views/AgentPreferencesView.swift`
+  - `bitchat/Views/MeshPeerList.swift`
+  - `bitchat/Views/SidebarSessionsView.swift`
+- Tests:
+  - `bitchatTests/Protocols/AgentMeshPacketsTests.swift`
+  - `bitchatTests/Services/AgentFairExchangeServiceTests.swift`
+  - `bitchatTests/Services/AgentKnownModelCatalogTests.swift`
+  - `bitchatTests/AgentRequesterPreferencesTests.swift`
+  - `bitchatTests/AgentRoutingPreferencesTests.swift`
+  - `bitchatTests/Services/AgentPaymentStoreTests.swift`
+  - `bitchatTests/Services/AgentPaymentBridgeTests.swift`
+  - `bitchatTests/Services/AgentPaymentLockKeyStoreTests.swift`
+  - `bitchatTests/Services/AgentPaymentNotaryServiceTests.swift`
+  - `bitchatTests/Services/AgentSettlementGossipTests.swift`
+  - `bitchatTests/Services/CashuModelsTests.swift`
+  - `bitchatTests/Services/X402ModelsTests.swift`
+  - `bitchatTests/Services/MintGatewayServiceTests.swift`
+  - `bitchatTests/Services/AgentMemoryStoreTests.swift`
+  - `bitchatTests/Services/AgentMemoryRecallTests.swift`
+  - `bitchatTests/Services/AgentSessionStoreTests.swift`
+  - `bitchatTests/ChatViewModelPaymentsTests.swift`
 
 ## Discovery Flow
-1) Local agent config is loaded from UserDefaults (bitchat.agent.config).
-2) ChatViewModel applies AgentInfo to BLEService via setAgentInfo().
-3) BLEService includes agentInfo TLV on announce payloads.
-4) Peers decode agentInfo and update PeerInfo.agentInfo.
-5) TransportPeerSnapshot carries agentInfo into UnifiedPeerService and BitchatPeer.
-6) UI shows a small agent icon for peers with agentInfo.
+1. Local agent config is loaded from `UserDefaults`.
+2. `ChatViewModel` applies `AgentInfo` to mesh service announce state.
+3. Announce packets include `agentInfo` TLV (`0x05`).
+4. Peers decode `agentInfo` and update transport snapshots.
+5. UI renders agent-capable peers with role/model metadata.
 
 ```mermaid
 flowchart LR
@@ -55,106 +101,118 @@ flowchart LR
   F --> G[BitchatPeer.agentInfo]
 ```
 
-## Request Flow
-1) User sends /agent <role> <prompt>.
-2) CommandProcessor calls ChatViewModel.dispatchAgentRequest().
-3) ChatViewModel filters peers with agentInfo and matches role.
-4) It prefers connected peers, then reachable peers, then highest quality score.
-5) It appends a local DM message for the request.
-6) It sends AgentRequestPacket via Transport.sendAgentRequest().
-7) If attachments are queued, it includes attachmentCount and senderAlias.
-7) BLEService wraps packet into Noise payload type agentRequest and sends it.
+## Request Lifecycle Flow
+1. User sends `/agent <role> <prompt>`.
+2. Routing filters peers by role, reachability, quality, known-model preferences, and optional payment filter.
+3. For eligible per-request payment providers, requester sends quote discovery packets and receives tier options.
+4. User selects an option by tap or `/agentchoose <quoteID> <optionIndex>`; optional auto-pick can select immediately after quote collection.
+5. `AgentRequestPacket` is sent with optional `sessionID`, TTL fields, attachment metadata, and optional quote binding fields (`quoteID`, `quoteOptionID`).
+6. Request state is tracked for timeout + retry (`AgentRetryQueue`), preserving quote binding on retries.
+7. Receiver executes runtime or returns payment interstitial when required.
 
-```mermaid
-sequenceDiagram
-  participant UI as UI
-  participant VM as ChatViewModel
-  participant BLE as BLEService
-  participant Peer as Agent Peer
-  UI->>VM: /agent <role> <prompt>
-  VM->>VM: select best peer
-  VM->>VM: append DM request (local)
-  VM->>BLE: sendAgentRequest()
-  BLE->>Peer: Noise payload (agentRequest)
-```
+## Streaming and Assembly Flow
+1. Provider can emit `AgentResponseChunkPacket` (`agentResponseChunk` payload type).
+2. Receiver appends chunks into `AgentResponseAssembler`/stream buffers.
+3. UI renders partial output incrementally and finalizes on `isFinal=true`.
+4. Stalled streams can trigger request retry logic.
 
-## Response Flow
-1) Agent device receives Noise payload type agentRequest.
-2) ChatViewModel.handleAgentRequest() validates role match.
-3) AgentRuntime.run() produces an AgentResponsePacket + attachments.
-4) BLEService sends agentResponse payloads back over the mesh (chunked if needed).
-5) ChatViewModel.handleAgentResponse() reassembles chunks and renders a DM message in the agent thread.
-6) Attachments are sent as file transfers with contextID = sessionID.
+## Payment Interstitial Flow
+1. Provider sends `AgentResponsePacket(paymentRequired=true, paymentRequest=...)`.
+2. Requester records pending prompt and can pay via UI action or `/agentpay <requestID>`.
+3. Requester sends `AgentPaymentPayloadPacket` (includes `sessionID` when present).
+4. Provider validates payload via `AgentPaymentStore` idempotency checks.
+5. Provider returns `AgentPaymentReceiptPacket` (`accepted_offline`, `finalized_online`, or `rejected`).
+6. Session/payment UI state is updated from receipt status.
+7. When fair exchange is active (4E), provider sends encrypted response offer chunks before payment and includes receipt unlock key so requester can decrypt deterministically.
+8. When lock-required payment terms are active, requester relocks selected proofs to a per-request pubkey (direct mint path first, gateway relock fallback), and provider enforces fail-closed lock binding before offline/online acceptance.
+9. For `paymentRail=x402`, requester builds `xpay:` payload using `ThirdwebGuestWalletBridge`, and provider settles via `X402GatewayClient` (`/x402/settle`).
+
+## Settlement Gossip Flow (Phase 4B)
+1. Provider acceptance path registers hashed nullifiers in `AgentSettlementGossip`.
+2. Runtime emits settlement messages into mesh room `#settle` (`SpendAnnounce` or `SpendConflict`).
+3. When internet relay path exists, runtime bridges to `#settle-global`.
+4. Incoming payment payloads are pre-checked against observed nullifiers before bridge evaluation.
+5. Conflicts are re-broadcast as conflict signals, not bearer proofs.
 
 ## Attachment Flow
-1) User queues media in the composer (not immediately sent).
-2) `/agent` sends a request with attachmentCount and senderAlias.
-3) Attachments are sent to the agent peer with contextID = sessionID.
-4) Agent waits for attachmentCount and matches by sessionID (contextID), then peer fallback.
-5) Runtime receives `AgentRuntimeAttachment` list for multimodal processing.
+1. User queues media before `/agent` send.
+2. Request includes `attachmentCount` and `senderAlias`.
+3. Attachments are transferred with `contextID = sessionID`.
+4. Receiver waits for expected attachments, then invokes runtime.
 
-```mermaid
-sequenceDiagram
-  participant Peer as Agent Peer
-  participant BLE as BLEService
-  participant VM as ChatViewModel
-  Peer->>VM: agentRequest (Noise)
-  VM->>VM: AgentRuntime.run()
-  VM->>VM: append DM response (local)
-  VM->>BLE: sendAgentResponse()
-  BLE->>Peer: Noise payload (agentResponse)
-```
+## Session + Memory Flow (Phase 6)
+1. Session history is persisted via `AgentSessionStore` and surfaced in the Sessions sidebar.
+2. `/agentsession` commands can list/resume/new/end agent sessions.
+3. Agent settings expose local memory files (`MEMORY.md`, daily logs) through `AgentMemoryStore`.
+4. Manual attached memory snippets and optional auto-recall snippets are prepended to outgoing prompts locally.
+5. Session rows track payment lifecycle state (`paid`, `accepted_offline`, `finalized`, `failed`).
 
 ## Config Surface (Slash Commands)
-- /agent <role> <prompt>
-- /agentconfig
-- /agentset <role> <model> [quality] [hash]
-- /agenton /agentoff
-- /agentquality <0-100>
-- /agentruntime <echo|gateway>
-- /agentgateway <url>
-- /agenttoken <token>
-- /agenttimeout <seconds>
+- `/agent <role> <prompt>`
+- `/agentconfig`
+- `/agentset <role> <model> [quality] [hash]`
+- `/agenton` / `/agentoff`
+- `/agentquality <0-100>`
+- `/agentruntime <echo|gateway>`
+- `/agentgateway <url>`
+- `/agenttoken <token>`
+- `/agenttimeout <seconds>`
+- `/agentstream <on|off>`
+- `/agentsession ...`
+- `/agentchoose <quoteID> <optionIndex>`
+- `/agentpay <requestID>`
+- `/agentwallet ...`
+- `/agentfilter ...`
 
 ## Known Limits (Current)
-- request TLVs cap prompt to 255 bytes.
-- responses are chunked into 255-byte TLVs and reassembled.
-- no request timeout or retry.
-- attachment wait timeout/lookback: 180s / 120s (agent side).
+- Request/response TLV string fields are capped at 255 bytes.
+- Chunk streaming is best-effort over lossy mesh transport.
+- Payment payload/receipt packets, Phase 4A interstitial flow, Phase 4B settlement gossip, Phase 4C gateway proxy execution, Phase 4D per-token/tranche flow, Phase 4E fair-exchange encrypted release, Phase 4F notary hardening, and Phase 4 P2PK lock/relock hardening are in-tree.
+- Multi-rail Phase 4G is partially in-tree: `paymentRail=x402` protocol/model wiring, requester preference gating, provider wizard x402 config, and bridge-level x402 request/payload/settlement flow are implemented.
+- X402 flow depends on a reachable gateway/facilitator path and is online-only by design.
+- `swift test` is expected to be green via `scripts/agent_mesh_test.sh`.
+- Trust/reputation is intentionally deferred; Phase 7 tiered-quote routing and UX follow-ons are in-tree.
 
-## Roadmap Status
-- Phase 0: Done
-- Phase 1: Done
-- Phase 3: Partial (chunking implemented, streaming payload type not added)
-- Phase 6: Partial (sessions + aliases, no session store/commands)
+## Roadmap Status Snapshot
+- Phase 0: Complete
+- Phase 1: Complete
+- Phase 2: Complete
+- Phase 3: Complete
+- Phase 4: Partial (4A + 4B + 4C + 4D + 4E + 4F-notary + P2PK hardening + 4G x402 baseline; reputation/incentives deferred)
+- Phase 5: Deferred
+- Phase 6: Complete
+- Phase 7: Complete (tiered quote discovery, tap/command selection, auto-pick policies, provider tier config, and quote lifecycle cleanup)
+
+## Not Yet Implemented (Later Phase 4 milestones)
+- Reputation policy remains deferred pending privacy-first review.
+- Incentive/capacity-payment policy remains optional and deferred.
+- Attested model-quality proof remains out of scope (current `modelHash` is self-attested and identity-bound only).
+- Production facilitator integration hardening (provider-specific upstream contracts/keys for x402 prepare+settle) is environment-specific and requires deployment-time configuration.
 
 ## Extension Points
-### LLM Runtime Integration
-Replace EchoAgentRuntime with a real implementation:
-- Local LLM: run a model in-process and return response text.
-- Local gateway: call a Moltbot gateway or agent service.
-- Remote API: call external LLM endpoint with auth + safety rules.
+### Runtime Integration
+- Add/replace runtime providers in `AgentRuntime` and gateway adapters.
 
-### Transport Changes
-If future transport(s) are added, implement:
-- sendAgentRequest()
-- sendAgentResponse()
-- agentInfo propagation in TransportPeerSnapshot
+### Payment Rails
+- Extend `AgentPaymentBridge` with additional rails while preserving `AgentPaymentPayloadPacket` semantics.
 
-### UI Enhancements
-- Add a dedicated settings screen for agent config.
-- Show agent role/model/quality in peer list or profile view.
+### Transport
+- Any new transport must support agent request/response, chunk, payment payload/receipt, and mint proxy payload types.
+
+### UI
+- Expand payment/session controls in `AgentSettingsView` and chat action surfaces.
 
 ## Testing Checklist
-- Single device:
-  - /agentconfig returns current values.
-  - /agentset + /agenton persists config.
-- Two devices:
-  - Agent device advertises role.
-  - Caller sends /agent role prompt.
-  - Request + response appear in the private DM thread (not mesh timeline).
-
-## Debugging Tips
-- Announce payloads are signed; unverified announces are ignored.
-- If peers are not visible, verify Bluetooth state and mesh reachability.
-- Agent selection uses peer list from UnifiedPeerService; confirm peer has agentInfo.
+- Protocol:
+  - `AgentInfo v1/v2` encode/decode
+  - request/response/chunk packet round-trips
+  - payment payload/receipt and mint proxy round-trips
+- Reliability:
+  - TTL expiry removes pending request/payment state
+  - retry queue flushes when peers become reachable
+- Payments:
+  - duplicate payload for same request is rejected
+  - replay across different request IDs is rejected
+- End-to-end:
+  - payment interstitial pauses completion until receipt
+  - streaming resumes cleanly after acceptance

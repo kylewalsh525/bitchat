@@ -16,8 +16,14 @@ extension ChatViewModel {
 
     @MainActor
     func wipeAllAgentSessions() {
+        let activeWasAgentSession = selectedPrivateChatPeer?.isAgentSession == true
         agentSessionStore.wipeAllSessions()
+        agentSessionsByThread.removeAll()
+        agentThreadsBySessionID.removeAll()
         agentSessionHistory = []
+        if activeWasAgentSession {
+            selectedPrivateChatPeer = nil
+        }
     }
 
     @MainActor
@@ -38,7 +44,9 @@ extension ChatViewModel {
             peerNickname: peerNickname,
             senderAlias: nil,
             recordID: record.id,
-            seedHistory: record.history
+            seedHistory: record.history,
+            paymentState: record.paymentState,
+            paymentUpdatedAt: record.paymentUpdatedAt
         )
         refreshAgentSessionHistory()
         return session
@@ -108,6 +116,38 @@ extension ChatViewModel {
     }
 
     @MainActor
+    func setAgentSessionPaymentState(sessionID: String?, threadID: PeerID?, state: AgentSessionPaymentState) {
+        var resolvedThread = threadID
+        if resolvedThread == nil, let sessionID {
+            resolvedThread = agentThreadsBySessionID[normalizeSessionID(sessionID)]
+        }
+        guard let resolvedThread, var session = agentSessionsByThread[resolvedThread] else { return }
+        session.paymentState = state
+        session.paymentUpdatedAt = Date()
+        agentSessionsByThread[resolvedThread] = session
+        if let recordID = session.recordID {
+            agentSessionStore.updatePaymentState(recordID: recordID, state: state)
+            refreshAgentSessionHistory()
+        }
+    }
+
+    @MainActor
+    func clearAgentSessionPaymentState(sessionID: String?, threadID: PeerID?) {
+        var resolvedThread = threadID
+        if resolvedThread == nil, let sessionID {
+            resolvedThread = agentThreadsBySessionID[normalizeSessionID(sessionID)]
+        }
+        guard let resolvedThread, var session = agentSessionsByThread[resolvedThread] else { return }
+        session.paymentState = nil
+        session.paymentUpdatedAt = nil
+        agentSessionsByThread[resolvedThread] = session
+        if let recordID = session.recordID {
+            agentSessionStore.clearPaymentState(recordID: recordID)
+            refreshAgentSessionHistory()
+        }
+    }
+
+    @MainActor
     func sendAgentSessionMessage(prompt: String, threadID: PeerID, draftAttachments: [DraftAttachment]) {
         guard let session = agentSessionsByThread[threadID] else {
             addSystemMessage("agent session unavailable")
@@ -126,6 +166,11 @@ extension ChatViewModel {
             updateAgentSession(threadID: threadID) { current in
                 current.seedInjected = true
             }
+        }
+
+        let memoryContext = buildAgentMemoryContext(for: trimmedPrompt)
+        if !memoryContext.context.isEmpty {
+            outgoingPrompt = memoryContext.context + "\n\n" + outgoingPrompt
         }
 
         let requestID = UUID().uuidString
@@ -152,6 +197,8 @@ extension ChatViewModel {
             prompt: outgoingPrompt,
             attachmentCount: attachmentCount,
             senderAlias: session.senderAlias,
+            quoteID: nil,
+            quoteOptionID: nil,
             draftAttachments: draftAttachments,
             createdAtMs: createdAtMs,
             ttlMs: ttlMs,
@@ -323,7 +370,9 @@ extension ChatViewModel {
                                     peerNickname: String,
                                     senderAlias: String? = nil,
                                     recordID: String? = nil,
-                                    seedHistory: [AgentSessionMessage] = []) -> AgentSession {
+                                    seedHistory: [AgentSessionMessage] = [],
+                                    paymentState: AgentSessionPaymentState? = nil,
+                                    paymentUpdatedAt: Date? = nil) -> AgentSession {
         let normalized = normalizeSessionID(sessionID)
         let threadID = PeerID(agentSessionID: normalized)
         let alias = senderAlias ?? "anon-\(UUID().uuidString.prefix(8))"
@@ -338,7 +387,9 @@ extension ChatViewModel {
             recordID: recordID,
             seedHistory: seedHistory,
             seedInjected: seedHistory.isEmpty,
-            history: seedHistory
+            history: seedHistory,
+            paymentState: paymentState,
+            paymentUpdatedAt: paymentUpdatedAt
         )
         agentSessionsByThread[threadID] = session
         agentThreadsBySessionID[normalized] = threadID
@@ -404,7 +455,7 @@ extension ChatViewModel {
         guard let record = agentSessionStore.session(for: resolvedID) else {
             return .error(message: "unknown session id")
         }
-        guard let target = pickAgentCandidate(role: record.role, minQuality: record.minQuality) else {
+        guard let target = selectAgentCandidate(role: record.role, allowAnyRole: false, minimumQuality: record.minQuality) else {
             return .error(message: "no reachable agents for role '\(record.role)' with required quality")
         }
         let alias = "anon-\(UUID().uuidString.prefix(8))"
@@ -421,7 +472,7 @@ extension ChatViewModel {
 
     @MainActor
     func startFreshAgentSession(role: String, minQuality: UInt8) -> CommandResult {
-        guard let target = pickAgentCandidate(role: role, minQuality: minQuality) else {
+        guard let target = selectAgentCandidate(role: role, allowAnyRole: false, minimumQuality: minQuality) else {
             return .error(message: "no reachable agents for role '\(role)' with required quality")
         }
         let alias = "anon-\(UUID().uuidString.prefix(8))"
@@ -445,7 +496,11 @@ extension ChatViewModel {
             let lines = sessions.prefix(10).map { record in
                 let dateString = formatter.string(from: record.lastUsedAt)
                 let title = record.title.isEmpty ? "New session" : record.title
-                return "\(record.id.prefix(8)) • \(record.role) • \(title) • \(dateString)"
+                let paymentSuffix: String = {
+                    guard let state = record.paymentState else { return "" }
+                    return " • \(state.rawValue)"
+                }()
+                return "\(record.id.prefix(8)) • \(record.role) • \(title) • \(dateString)\(paymentSuffix)"
             }
             return .success(message: "sessions:\n" + lines.joined(separator: "\n"))
         }
@@ -479,23 +534,5 @@ extension ChatViewModel {
         }
     }
 
-    @MainActor
-    private func pickAgentCandidate(role: String, minQuality: UInt8) -> BitchatPeer? {
-        let normalizedRole = role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let candidates = allPeers.filter { peer in
-            guard let info = peer.agentInfo else { return false }
-            return info.normalizedRole == normalizedRole && info.qualityScore >= minQuality
-        }
-        let reachable = candidates.filter { $0.isConnected || $0.isReachable }
-        return reachable.sorted(by: agentCandidateSort).first
-    }
-
-    private func agentCandidateSort(_ lhs: BitchatPeer, _ rhs: BitchatPeer) -> Bool {
-        if lhs.isConnected != rhs.isConnected { return lhs.isConnected }
-        if lhs.isReachable != rhs.isReachable { return lhs.isReachable }
-        let lq = lhs.agentInfo?.qualityScore ?? 0
-        let rq = rhs.agentInfo?.qualityScore ?? 0
-        if lq != rq { return lq > rq }
-        return lhs.displayName < rhs.displayName
-    }
+ 
 }

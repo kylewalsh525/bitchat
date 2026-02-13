@@ -195,8 +195,13 @@ struct ChatViewModelReceivingTests {
             messageID: "pub-001"
         )
 
-        // Give time for async Task and pipeline processing
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        // Give time for async Task and pipeline processing (poll to avoid flakiness).
+        for _ in 0..<20 {
+            if viewModel.messages.contains(where: { $0.content == "Public hello from Bob" }) {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
 
         #expect(viewModel.messages.contains { $0.content == "Public hello from Bob" })
     }

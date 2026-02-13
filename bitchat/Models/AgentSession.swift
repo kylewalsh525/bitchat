@@ -12,6 +12,13 @@ struct AgentSessionMessage: Codable, Equatable {
     let content: String
 }
 
+enum AgentSessionPaymentState: String, Codable, CaseIterable {
+    case paid
+    case acceptedOffline = "accepted_offline"
+    case finalized
+    case failed
+}
+
 struct AgentSession: Equatable {
     let sessionID: String
     let threadID: PeerID
@@ -24,6 +31,8 @@ struct AgentSession: Equatable {
     var seedHistory: [AgentSessionMessage]
     var seedInjected: Bool
     var history: [AgentSessionMessage]
+    var paymentState: AgentSessionPaymentState?
+    var paymentUpdatedAt: Date?
 
     mutating func appendMessage(role: String, content: String, limit: Int) {
         history.append(AgentSessionMessage(role: role, content: content))

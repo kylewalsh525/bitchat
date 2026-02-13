@@ -20,6 +20,7 @@ struct AgentCatalogModel: Codable, Identifiable, Equatable, Hashable {
     let quant: String?
     let contextTokens: Int?
     let qualityScore: UInt8?
+    let modelHash: String?
 }
 
 enum AgentCatalogStatus: Equatable {
