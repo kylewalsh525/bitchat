@@ -1,23 +1,13 @@
 import SwiftUI
 
 struct AppInfoView: View {
-    @Environment(\.dismiss) var dismiss
-    @Environment(\.colorScheme) var colorScheme
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+
+    var showsCloseButton: Bool = true
     var onOpenAgentSettings: (() -> Void)? = nil
     var onOpenAgentPreferences: (() -> Void)? = nil
     var onOpenSettings: (() -> Void)? = nil
-    
-    private var backgroundColor: Color {
-        colorScheme == .dark ? Color.black : Color.white
-    }
-    
-    private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
-    }
-    
-    private var secondaryTextColor: Color {
-        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
-    }
 
     private var settingsAction: (() -> Void)? {
         if let onOpenSettings { return onOpenSettings }
@@ -25,8 +15,26 @@ struct AppInfoView: View {
         if let onOpenAgentPreferences { return onOpenAgentPreferences }
         return nil
     }
-    
-    // MARK: - Constants
+
+    private var featureItems: [AppInfoFeatureInfo] {
+        [
+            Strings.Features.offlineComm,
+            Strings.Features.encryption,
+            Strings.Features.extendedRange,
+            Strings.Features.favorites,
+            Strings.Features.geohash,
+            Strings.Features.mentions
+        ]
+    }
+
+    private var privacyItems: [AppInfoFeatureInfo] {
+        [
+            Strings.Privacy.noTracking,
+            Strings.Privacy.ephemeral,
+            Strings.Privacy.panic
+        ]
+    }
+
     private enum Strings {
         static let appName: LocalizedStringKey = "app_info.app_name"
         static let tagline: LocalizedStringKey = "app_info.tagline"
@@ -95,126 +103,54 @@ struct AppInfoView: View {
                 "app_info.how_to_use.commands"
             ]
         }
-
     }
-    
+
     var body: some View {
-        #if os(macOS)
-        VStack(spacing: 0) {
-            // Custom header for macOS
-            HStack {
-                Spacer()
-                Button("app_info.done") {
-                    dismiss()
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(textColor)
-                .padding()
-            }
-            .background(backgroundColor.opacity(0.95))
-            
-            ScrollView {
-                infoContent
-            }
-            .background(backgroundColor)
-        }
-        .frame(width: 600, height: 700)
-        #else
-        NavigationView {
-            ScrollView {
-                infoContent
-            }
-            .background(backgroundColor)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { dismiss() }) {
-                        Image(systemName: "xmark")
-                            .font(.bitchatSystem(size: 13, weight: .semibold, design: .monospaced))
-                            .foregroundColor(textColor)
-                            .frame(width: 32, height: 32)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("app_info.close")
-                }
-            }
-        }
-        #endif
-    }
-    
-    @ViewBuilder
-    private var infoContent: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            // Header
-            VStack(alignment: .center, spacing: 8) {
-                Text(Strings.appName)
-                    .font(.bitchatSystem(size: 32, weight: .bold, design: .monospaced))
-                    .foregroundColor(textColor)
-                
-                Text(Strings.tagline)
-                    .font(.bitchatSystem(size: 16, design: .monospaced))
-                    .foregroundColor(secondaryTextColor)
-
+        Form {
+            Section {
+                SettingsIconRow(
+                    icon: "bubble.left.and.bubble.right",
+                    title: Strings.appName,
+                    subtitle: Strings.tagline
+                )
                 if let settingsAction {
-                    Button(action: settingsAction) {
-                        Text("Open settings")
-                            .font(.bitchatSystem(size: 12, design: .monospaced))
-                            .foregroundColor(textColor)
-                            .padding(.vertical, 6)
-                            .padding(.horizontal, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(textColor.opacity(0.6), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+                    Button("Open settings", action: settingsAction)
                 }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical)
-            
-            // How to Use
-            VStack(alignment: .leading, spacing: 16) {
-                SectionHeader(Strings.HowToUse.title)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(Strings.HowToUse.instructions.enumerated()), id: \.offset) { _, instruction in
-                        Text(instruction)
-                    }
+            Section(Strings.HowToUse.title) {
+                ForEach(Array(Strings.HowToUse.instructions.enumerated()), id: \.offset) { _, instruction in
+                    SettingsIconRow(
+                        icon: "checkmark.circle",
+                        title: instruction
+                    )
                 }
-                .font(.bitchatSystem(size: 14, design: .monospaced))
-                .foregroundColor(textColor)
             }
 
-            // Features
-            VStack(alignment: .leading, spacing: 16) {
-                SectionHeader(Strings.Features.title)
-
-                FeatureRow(info: Strings.Features.offlineComm)
-
-                FeatureRow(info: Strings.Features.encryption)
-
-                FeatureRow(info: Strings.Features.extendedRange)
-
-                FeatureRow(info: Strings.Features.favorites)
-
-                FeatureRow(info: Strings.Features.geohash)
-
-                FeatureRow(info: Strings.Features.mentions)
+            Section(Strings.Features.title) {
+                ForEach(Array(featureItems.enumerated()), id: \.offset) { _, item in
+                    AppInfoFeatureRow(info: item)
+                }
             }
 
-            // Privacy
-            VStack(alignment: .leading, spacing: 16) {
-                SectionHeader(Strings.Privacy.title)
-
-                FeatureRow(info: Strings.Privacy.noTracking)
-
-                FeatureRow(info: Strings.Privacy.ephemeral)
-
-                FeatureRow(info: Strings.Privacy.panic)
+            Section(Strings.Privacy.title) {
+                ForEach(Array(privacyItems.enumerated()), id: \.offset) { _, item in
+                    AppInfoFeatureRow(info: item)
+                }
             }
         }
-        .padding()
+        .navigationTitle("About BitChat")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            if showsCloseButton {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .tint(colorScheme == .dark ? .green : Color(red: 0, green: 0.5, blue: 0))
     }
 }
 
@@ -224,71 +160,34 @@ struct AppInfoFeatureInfo {
     let description: LocalizedStringKey
 }
 
-struct SectionHeader: View {
-    let title: LocalizedStringKey
-    @Environment(\.colorScheme) var colorScheme
-    
-    private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
-    }
-    
-    init(_ title: LocalizedStringKey) {
-        self.title = title
-    }
-    
-    var body: some View {
-        Text(title)
-            .font(.bitchatSystem(size: 16, weight: .bold, design: .monospaced))
-            .foregroundColor(textColor)
-            .padding(.top, 8)
-    }
-}
-
-struct FeatureRow: View {
+private struct AppInfoFeatureRow: View {
     let info: AppInfoFeatureInfo
-    @Environment(\.colorScheme) var colorScheme
-    
-    private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
-    }
-    
-    private var secondaryTextColor: Color {
-        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
-    }
-    
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: info.icon)
-                .font(.bitchatSystem(size: 20))
-                .foregroundColor(textColor)
-                .frame(width: 30)
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(info.title)
-                    .font(.bitchatSystem(size: 14, weight: .semibold, design: .monospaced))
-                    .foregroundColor(textColor)
-                
-                Text(info.description)
-                    .font(.bitchatSystem(size: 12, design: .monospaced))
-                    .foregroundColor(secondaryTextColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            
-            Spacer()
-        }
+        SettingsIconRow(
+            icon: info.icon,
+            title: info.title,
+            subtitle: info.description
+        )
     }
 }
 
 #Preview("Default") {
-    AppInfoView()
+    NavigationStack {
+        AppInfoView()
+    }
 }
 
 #Preview("Dynamic Type XXL") {
-    AppInfoView()
-        .environment(\.sizeCategory, .accessibilityExtraExtraExtraLarge)
+    NavigationStack {
+        AppInfoView()
+            .environment(\.sizeCategory, .accessibilityExtraExtraExtraLarge)
+    }
 }
 
 #Preview("Dynamic Type XS") {
-    AppInfoView()
-        .environment(\.sizeCategory, .extraSmall)
+    NavigationStack {
+        AppInfoView()
+            .environment(\.sizeCategory, .extraSmall)
+    }
 }

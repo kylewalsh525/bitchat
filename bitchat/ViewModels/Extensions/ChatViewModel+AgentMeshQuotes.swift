@@ -413,7 +413,9 @@ extension ChatViewModel {
         let session = startAgentSession(peerID: selected.peerID, role: selected.role, peerNickname: alias)
         let attachmentCount = pending.draftAttachments.isEmpty ? nil : UInt8(min(pending.draftAttachments.count, 255))
         let waitTTLms = UInt64(selected.waitSeconds) * 1000 + UInt64(TransportConfig.agentRequestTTLms)
-        let effectiveTTLms = UInt32(min(UInt64(UInt32.max), max(UInt64(pending.ttlMs), waitTTLms)))
+        let baseTTLms = UInt32(min(UInt64(UInt32.max), max(UInt64(pending.ttlMs), waitTTLms)))
+        let effectiveTTLms = effectiveAgentRequestTTLms(for: selected.role, requestedTTLms: baseTTLms)
+        let retries = effectiveAgentRequestRetryBudget(for: selected.role)
 
         let request = AgentRequestPacket(
             requestID: requestID,
@@ -441,7 +443,7 @@ extension ChatViewModel {
             draftAttachments: pending.draftAttachments,
             createdAtMs: pending.createdAtMs,
             ttlMs: effectiveTTLms,
-            retriesLeft: TransportConfig.agentRequestMaxRetries,
+            retriesLeft: retries,
             sentAt: Date()
         )
         addAgentRequestDM(

@@ -8,14 +8,15 @@
 
 /* Begin PBXBuildFile section */
 		17901751FD8010AFC8E750F2 /* bitchatShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 61F92EBA29C47C0FCC482F1F /* bitchatShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		1A15B9E6CE634164971F7CC5 /* CashuDevKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1CC665F27802491E9D0BD6C3 /* CashuDevKit */; };
 		3EE336D150427F736F32B56C /* P256K in Frameworks */ = {isa = PBXBuildFile; productRef = B1D9136AA0083366353BFA2F /* P256K */; };
 		885BBED78092484A5B069461 /* P256K in Frameworks */ = {isa = PBXBuildFile; productRef = 4EB6BA1B8464F1EA38F4E286 /* P256K */; };
+		8EBD1889F7C7465D8B82788E /* CashuDevKit in Frameworks */ = {isa = PBXBuildFile; productRef = BBA858B2705C4CC9B3267608 /* CashuDevKit */; };
 		A6E3E5702E77036A0032EA8A /* BitLogger in Frameworks */ = {isa = PBXBuildFile; productRef = A6E3E56F2E77036A0032EA8A /* BitLogger */; };
 		A6E3E5722E7703760032EA8A /* BitLogger in Frameworks */ = {isa = PBXBuildFile; productRef = A6E3E5712E7703760032EA8A /* BitLogger */; };
 		A6E3EA7F2E7706720032EA8A /* Tor in Frameworks */ = {isa = PBXBuildFile; productRef = A6E3EA7E2E7706720032EA8A /* Tor */; };
+		B1A1B0E02E9999990032EA8A /* TorStatic in Frameworks */ = {isa = PBXBuildFile; productRef = B1A1B0E12E9999990032EA8A /* TorStatic */; };
 		A6E3EA812E7706A80032EA8A /* Tor in Frameworks */ = {isa = PBXBuildFile; productRef = A6E3EA802E7706A80032EA8A /* Tor */; };
-		1A15B9E6CE634164971F7CC5 /* CashuDevKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1CC665F27802491E9D0BD6C3 /* CashuDevKit */; };
-		8EBD1889F7C7465D8B82788E /* CashuDevKit in Frameworks */ = {isa = PBXBuildFile; productRef = BBA858B2705C4CC9B3267608 /* CashuDevKit */; };
 		E0A1B2C3D4E5F6012345678D /* relays/online_relays_gps.csv in Resources */ = {isa = PBXBuildFile; fileRef = E0A1B2C3D4E5F6012345678A /* relays/online_relays_gps.csv */; };
 		E0A1B2C3D4E5F6012345678E /* relays/online_relays_gps.csv in Resources */ = {isa = PBXBuildFile; fileRef = E0A1B2C3D4E5F6012345678A /* relays/online_relays_gps.csv */; };
 /* End PBXBuildFile section */
@@ -56,14 +57,41 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-/* End PBXCopyFilesBuildPhase section */
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A6F0AA1A2E7710A40032EA80 /* Embed Package Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed Package Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/bash -lc 'set -e; if [ \"$ACTION\" = \"indexbuild\" ]; then exit 0; fi; if [ -z \"$BUILT_PRODUCTS_DIR\" ] || [ -z \"$TARGET_BUILD_DIR\" ] || [ -z \"$FRAMEWORKS_FOLDER_PATH\" ]; then exit 0; fi; PLATFORM=\"${PLATFORM_NAME}\"; PACKAGE_FRAMEWORKS=\"$BUILT_PRODUCTS_DIR/PackageFrameworks\"; TARGET_FRAMEWORKS=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"; mkdir -p \"$TARGET_FRAMEWORKS\"; if [ ! -d \"$PACKAGE_FRAMEWORKS\" ]; then exit 0; fi; for framework in \"$PACKAGE_FRAMEWORKS\"/*.framework; do [ -d \"$framework\" ] || continue; framework_name=\"$(basename \"$framework\")\"; case \"$PLATFORM\" in\n\t\t\t\tiphoneos*|iphonesimulator*)\n\t\t\t\t\t;;\n\t\t\t\t\tmacosx*)\n\t\t\t\t\t\tif [ \"$framework_name\" = \"TorStatic.framework\" ]; then\n\t\t\t\t\t\t\tcontinue\n\t\t\t\t\t\tfi\n\t\t\t\t\t\t;;\n\t\t\t\tesac\n\t\t\t\tditto \"$framework\" \"$TARGET_FRAMEWORKS/$framework_name\"; if [ \"$CODE_SIGNING_ALLOWED\" = \"YES\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none \"$TARGET_FRAMEWORKS/$framework_name\"; fi; done'";
+		};
+		A6F0AA1A2E7710A50032EA80 /* Embed Package Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Embed Package Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/bash -lc 'set -e; if [ \"$ACTION\" = \"indexbuild\" ]; then exit 0; fi; if [ -z \"$BUILT_PRODUCTS_DIR\" ] || [ -z \"$TARGET_BUILD_DIR\" ] || [ -z \"$FRAMEWORKS_FOLDER_PATH\" ]; then exit 0; fi; PLATFORM=\"${PLATFORM_NAME}\"; PACKAGE_FRAMEWORKS=\"$BUILT_PRODUCTS_DIR/PackageFrameworks\"; TARGET_FRAMEWORKS=\"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"; mkdir -p \"$TARGET_FRAMEWORKS\"; if [ ! -d \"$PACKAGE_FRAMEWORKS\" ]; then exit 0; fi; for framework in \"$PACKAGE_FRAMEWORKS\"/*.framework; do [ -d \"$framework\" ] || continue; framework_name=\"$(basename \"$framework\")\"; case \"$PLATFORM\" in\n\t\t\t\tiphoneos*|iphonesimulator*)\n\t\t\t\t\t;;\n\t\t\t\t\tmacosx*)\n\t\t\t\t\t\tif [ \"$framework_name\" = \"TorStatic.framework\" ]; then\n\t\t\t\t\t\t\tcontinue\n\t\t\t\t\t\tfi\n\t\t\t\t\t\t;;\n\t\t\t\tesac\n\t\t\t\tditto \"$framework\" \"$TARGET_FRAMEWORKS/$framework_name\"; if [ \"$CODE_SIGNING_ALLOWED\" = \"YES\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$EXPANDED_CODE_SIGN_IDENTITY\" != \"-\" ]; then /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none \"$TARGET_FRAMEWORKS/$framework_name\"; fi; done'";
+		};
+
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXFileReference section */
 		03C57F452B55FD0FD8F51421 /* bitchatTests_macOS.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = bitchatTests_macOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		61F92EBA29C47C0FCC482F1F /* bitchatShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = bitchatShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		8F3A7C058C2C8E1A06C8CF8B /* bitchat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = bitchat.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		96D0D41CA19EE5A772AA8434 /* bitchat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = bitchat.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A6F183FC2E948783006A9046 /* tor-nolzma.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = "tor-nolzma.xcframework"; path = "localPackages/Tor/Frameworks/tor-nolzma.xcframework"; sourceTree = "<group>"; };
 		C0DB1DE27F0AAB5092663E8E /* bitchatTests_iOS.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = bitchatTests_iOS.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E0A1B2C3D4E5F6012345678A /* relays/online_relays_gps.csv */ = {isa = PBXFileReference; lastKnownFileType = text; path = relays/online_relays_gps.csv; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -143,7 +171,7 @@
 			files = (
 				A6E3E5702E77036A0032EA8A /* BitLogger in Frameworks */,
 				885BBED78092484A5B069461 /* P256K in Frameworks */,
-				A6E3EA7F2E7706720032EA8A /* Tor in Frameworks */,
+				B1A1B0E02E9999990032EA8A /* TorStatic in Frameworks */,
 				8EBD1889F7C7465D8B82788E /* CashuDevKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -160,7 +188,6 @@
 				A6E32D412E762EAE0032EA8A /* bitchatTests */,
 				A6E367C92E76469E0032EA8A /* Configs */,
 				9F37F9F2C353B58AC809E93B /* Products */,
-				A6F183FB2E948783006A9046 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -176,14 +203,6 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		A6F183FB2E948783006A9046 /* Frameworks */ = {
-			isa = PBXGroup;
-			children = (
-				A6F183FC2E948783006A9046 /* tor-nolzma.xcframework */,
-			);
-			name = Frameworks;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -194,6 +213,7 @@
 				137ABE739BF20ACDDF8CC605 /* Sources */,
 				0214973A876129753D39EB47 /* Resources */,
 				31F6FDADA63050361C14F3A1 /* Frameworks */,
+				A6F0AA1A2E7710A50032EA80 /* Embed Package Frameworks */,
 			);
 			buildRules = (
 			);
@@ -289,7 +309,7 @@
 			packageProductDependencies = (
 				4EB6BA1B8464F1EA38F4E286 /* P256K */,
 				A6E3E56F2E77036A0032EA8A /* BitLogger */,
-				A6E3EA7E2E7706720032EA8A /* Tor */,
+				B1A1B0E12E9999990032EA8A /* TorStatic */,
 				BBA858B2705C4CC9B3267608 /* CashuDevKit */,
 			);
 			productName = bitchat_iOS;
@@ -662,6 +682,8 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = "$(MACOSX_DEPLOYMENT_TARGET)";
 				MARKETING_VERSION = "$(MARKETING_VERSION)";
+				NEW_SETTING = "";
+				NEW_SETTING1 = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PRODUCT_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = bitchat;
 				REGISTER_APP_GROUPS = YES;
@@ -754,6 +776,8 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = "$(MACOSX_DEPLOYMENT_TARGET)";
 				MARKETING_VERSION = "$(MARKETING_VERSION)";
+				NEW_SETTING = "";
+				NEW_SETTING1 = "";
 				PRODUCT_BUNDLE_IDENTIFIER = "$(PRODUCT_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = bitchat;
 				REGISTER_APP_GROUPS = YES;
@@ -931,14 +955,6 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		B8C407587481BBB190741C93 /* XCRemoteSwiftPackageReference "swift-secp256k1" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/21-DOT-DEV/swift-secp256k1";
-			requirement = {
-				kind = exactVersion;
-				version = 0.21.1;
-			};
-		};
 		4721C586BE9240C9A3B919E7 /* XCRemoteSwiftPackageReference "cdk-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/cashubtc/cdk-swift.git";
@@ -947,9 +963,22 @@
 				version = 0.14.3;
 			};
 		};
+		B8C407587481BBB190741C93 /* XCRemoteSwiftPackageReference "swift-secp256k1" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/21-DOT-DEV/swift-secp256k1";
+			requirement = {
+				kind = exactVersion;
+				version = 0.21.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		1CC665F27802491E9D0BD6C3 /* CashuDevKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4721C586BE9240C9A3B919E7 /* XCRemoteSwiftPackageReference "cdk-swift" */;
+			productName = CashuDevKit;
+		};
 		4EB6BA1B8464F1EA38F4E286 /* P256K */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = B8C407587481BBB190741C93 /* XCRemoteSwiftPackageReference "swift-secp256k1" */;
@@ -967,6 +996,10 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = Tor;
 		};
+		B1A1B0E12E9999990032EA8A /* TorStatic */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TorStatic;
+		};
 		A6E3EA802E7706A80032EA8A /* Tor */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Tor;
@@ -977,11 +1010,6 @@
 			productName = P256K;
 		};
 		BBA858B2705C4CC9B3267608 /* CashuDevKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4721C586BE9240C9A3B919E7 /* XCRemoteSwiftPackageReference "cdk-swift" */;
-			productName = CashuDevKit;
-		};
-		1CC665F27802491E9D0BD6C3 /* CashuDevKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 4721C586BE9240C9A3B919E7 /* XCRemoteSwiftPackageReference "cdk-swift" */;
 			productName = CashuDevKit;

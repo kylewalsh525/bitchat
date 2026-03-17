@@ -15,11 +15,13 @@ struct BlockRevealImageView: View {
     private let onCancel: (() -> Void)?
     private let initiallyBlurred: Bool
     private let onOpen: (() -> Void)?
+    private let onSave: (() -> Void)?
     private let onDelete: (() -> Void)?
 
     @State private var platformImage: PlatformImage?
     @State private var aspectRatio: CGFloat = 1
     @State private var isBlurred: Bool = false
+    @State private var loadFailed: Bool = false
 
     init(
         url: URL,
@@ -28,6 +30,7 @@ struct BlockRevealImageView: View {
         onCancel: (() -> Void)?,
         initiallyBlurred: Bool = false,
         onOpen: (() -> Void)? = nil,
+        onSave: (() -> Void)? = nil,
         onDelete: (() -> Void)? = nil
     ) {
         self.url = url
@@ -36,6 +39,7 @@ struct BlockRevealImageView: View {
         self.onCancel = onCancel
         self.initiallyBlurred = initiallyBlurred
         self.onOpen = onOpen
+        self.onSave = onSave
         self.onDelete = onDelete
     }
 
@@ -75,6 +79,20 @@ struct BlockRevealImageView: View {
                                 )
                         }
                     }
+            } else if loadFailed {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.gray.opacity(0.2))
+                    .frame(height: 200)
+                    .overlay {
+                        VStack(spacing: 6) {
+                            Image(systemName: "photo.badge.exclamationmark")
+                                .font(.bitchatSystem(size: 20, weight: .semibold))
+                                .foregroundColor(.secondary)
+                            Text("Image unavailable")
+                                .font(.bitchatSystem(size: 12, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                    }
             } else {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(Color.gray.opacity(0.2))
@@ -97,13 +115,27 @@ struct BlockRevealImageView: View {
                 .buttonStyle(.plain)
             }
         }
-        .onAppear {
+        .task(id: url) {
             isBlurred = initiallyBlurred
+            platformImage = nil
+            loadFailed = false
             loadImage()
         }
-        .onChange(of: url) { _ in
-            isBlurred = initiallyBlurred
-            loadImage()
+        .contextMenu {
+            if let onSave, !isSending {
+                Button {
+                    onSave()
+                } label: {
+                    Label("Save Copy", systemImage: "square.and.arrow.down")
+                }
+            }
+            if let onDelete, !isSending {
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
         }
         .gesture(mainGesture)
     }
@@ -111,23 +143,30 @@ struct BlockRevealImageView: View {
     private func loadImage() {
         DispatchQueue.global(qos: .userInitiated).async {
             #if os(iOS)
-            guard let image = UIImage(contentsOfFile: url.path) else { return }
+            guard let image = UIImage(contentsOfFile: url.path) else {
+                DispatchQueue.main.async {
+                    self.loadFailed = true
+                }
+                return
+            }
             #else
-            guard let image = NSImage(contentsOf: url) else { return }
+            guard let image = NSImage(contentsOf: url) else {
+                DispatchQueue.main.async {
+                    self.loadFailed = true
+                }
+                return
+            }
             #endif
             let ratio = image.size.height > 0 ? image.size.width / image.size.height : 1
             DispatchQueue.main.async {
                 self.platformImage = image
                 self.aspectRatio = ratio
+                self.loadFailed = false
             }
         }
     }
 
     private var mainGesture: some Gesture {
-        let doubleTap = TapGesture(count: 2).onEnded {
-            guard !isSending else { return }
-            onDelete?()
-        }
         let singleTap = TapGesture().onEnded {
             guard !isSending else { return }
             if isBlurred {
@@ -149,7 +188,7 @@ struct BlockRevealImageView: View {
                 }
             }
         }
-        return doubleTap.exclusively(before: singleTap).simultaneously(with: swipe)
+        return singleTap.simultaneously(with: swipe)
     }
 }
 
@@ -162,7 +201,8 @@ private struct BlockRevealMask: Shape {
         var path = Path()
         guard fraction > 0, columns > 0, rows > 0 else { return path }
         let totalBlocks = columns * rows
-        let revealCount = max(0, min(totalBlocks, Int(ceil(fraction * Double(totalBlocks)))))
+        let normalized = max(0.0, min(1.0, fraction))
+        let revealCount = min(totalBlocks, Int(ceil(normalized * Double(totalBlocks))))
         guard revealCount > 0 else { return path }
         let blockWidth = rect.width / CGFloat(columns)
         let blockHeight = rect.height / CGFloat(rows)

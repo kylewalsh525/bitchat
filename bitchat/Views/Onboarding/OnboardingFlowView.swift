@@ -12,7 +12,6 @@ struct OnboardingFlowView: View {
     var onOpenWallet: (() -> Void)? = nil
 
     @State private var step: Step = .welcome
-    @State private var showWalletSheet: Bool = false
 
     private var accent: Color {
         colorScheme == .dark ? .green : Color(red: 0, green: 0.5, blue: 0)
@@ -50,17 +49,17 @@ struct OnboardingFlowView: View {
         var subtitle: String {
             switch self {
             case .welcome:
-                return "Private mesh chat, DMs, and optional paid agents."
+                return "Private local chat plus optional paid helpers."
             case .nickname:
-                return "Choose the name peers nearby will see."
+                return "Choose the name people near you will see."
             case .permissions:
-                return "Bluetooth is required. Everything else is optional."
+                return "Bluetooth is required. Other permissions are optional."
             case .agents:
-                return "Request work from nearby providers when available."
+                return "Ask nearby helpers to do work for you."
             case .payments:
-                return "Choose your default payment behavior."
+                return "Pick how you usually want to pay."
             case .wallet:
-                return "Import Cashu ecash now or set it up later."
+                return "Set up payment rails now, or do it later in settings."
             case .finish:
                 return "You can change any setting later."
             }
@@ -86,12 +85,6 @@ struct OnboardingFlowView: View {
             .tint(accent)
         }
         .interactiveDismissDisabled(true)
-        .sheet(isPresented: $showWalletSheet) {
-            NavigationStack {
-                WalletView()
-                    .environmentObject(viewModel)
-            }
-        }
     }
 
     private var header: some View {
@@ -127,18 +120,18 @@ struct OnboardingFlowView: View {
         switch step {
         case .welcome:
             VStack(alignment: .leading, spacing: 14) {
-                bullet("antenna.radiowaves.left.and.right", "Works over nearby Bluetooth mesh, even offline.")
-                bullet("lock.shield", "Private chats are encrypted. Verify fingerprints when needed.")
-                bullet("cpu", "Agents are peers advertising capability; there is no central account.")
+                bullet("antenna.radiowaves.left.and.right", "BitChat can work with nearby devices over Bluetooth, even when internet is weak.")
+                bullet("lock.shield", "Your chats are encrypted. You can verify people with fingerprints for extra safety.")
+                bullet("cpu", "Agents are other people/devices offering help. There is no single central account.")
                 infoCallout(
                     icon: "gearshape",
                     title: "Tip",
-                    text: "Use the gear button for settings, wallet, and provider setup."
+                    text: "Use the gear button for wallet setup, agent setup, and privacy controls."
                 )
             }
         case .nickname:
             VStack(alignment: .leading, spacing: 14) {
-                Text("Pick something short. You can change it later.")
+                Text("Pick a short name. You can change it any time.")
                     .foregroundStyle(.secondary)
                 TextField("nickname", text: Binding(
                     get: { viewModel.nickname },
@@ -152,14 +145,14 @@ struct OnboardingFlowView: View {
                 infoCallout(
                     icon: "person.crop.circle.badge.checkmark",
                     title: "Identity note",
-                    text: "Nicknames are local, not global accounts. Use fingerprints to verify a peer."
+                    text: "This is not a global username. It is just a local display name."
                 )
             }
         case .permissions:
             VStack(alignment: .leading, spacing: 14) {
-                bullet("bluetooth", "Bluetooth is required for mesh discovery and messaging.")
-                bullet("bell", "Notifications help you notice DMs and mentions.")
-                bullet("location", "Location is optional; it enables geohash channels and internet relay policy.")
+                bullet("bluetooth", "Bluetooth is required so your phone can find nearby peers.")
+                bullet("bell", "Notifications help you notice new messages.")
+                bullet("location", "Location is optional. It helps with local channels and relay rules.")
 
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) {
@@ -191,24 +184,24 @@ struct OnboardingFlowView: View {
                     }
                 }
 
-                Text("You can continue without enabling everything.")
+                Text("You can keep going even if you skip optional permissions.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         case .agents:
             VStack(alignment: .leading, spacing: 14) {
-                Text("Send an agent request with:")
+                Text("To ask an agent for help, send this command:")
                     .foregroundStyle(.secondary)
                 codeBlock("/agent general hello")
                 infoCallout(
                     icon: "list.bullet.rectangle",
-                    title: "Quote flow",
-                    text: "If quotes appear, tap one option or use `/agentchoose`."
+                    title: "What are the choices?",
+                    text: "After you ask for help, an agent may reply with a few choices. Each choice shows the price and how long it might take. Pick one to start."
                 )
                 infoCallout(
                     icon: "info.circle",
-                    title: "Model identity",
-                    text: "`modelHash` is self-attested and identity-bound. It is not proof of compute."
+                    title: "What to do next",
+                    text: "Tap one choice to continue. Or type `/agentchoose` and pick the number you see."
                 )
             }
         case .payments:
@@ -245,52 +238,34 @@ struct OnboardingFlowView: View {
                 infoCallout(
                     icon: "shield.lefthalf.filled",
                     title: "Cashu",
-                    text: "More private and works over offline BLE mesh."
+                    text: "Best privacy and can work over local mesh."
                 )
                 infoCallout(
                     icon: "globe",
                     title: "x402",
-                    text: "Online only, on-chain payments via facilitator-backed infrastructure."
+                    text: "Online only. Uses internet wallet infrastructure."
                 )
             }
         case .wallet:
             VStack(alignment: .leading, spacing: 14) {
-                Text("Import Cashu ecash now or set up later from Settings > Wallet.")
+                Text("Wallet setup is guided. You can do it now, or later in Settings.")
                     .foregroundStyle(.secondary)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 12) {
-                        Button("Open wallet") {
-                            showWalletSheet = true
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Skip for now") {
-                            goNext()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    VStack(alignment: .leading, spacing: 10) {
-                        Button("Open wallet") {
-                            showWalletSheet = true
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        Button("Skip for now") {
-                            goNext()
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                bullet("1.circle.fill", "Cashu: import a token, approve mint, then you're ready to pay.")
+                bullet("2.circle.fill", "x402: connect a guest wallet (internet only).")
+                Button("Open wallet setup") {
+                    onOpenWallet?()
                 }
+                .buttonStyle(.borderedProminent)
                 infoCallout(
                     icon: "shield",
                     title: "Safety",
-                    text: "Unknown mints require explicit approval before import or payment."
+                    text: "Unknown mints must be approved first. x402 is online-only and shares more metadata."
                 )
             }
         case .finish:
             VStack(alignment: .leading, spacing: 14) {
-                bullet("gearshape", "Settings: agents, wallet, privacy, and support tools.")
-                bullet("shield.lefthalf.filled", "Offline payments are risk-managed; locking + notaries + settlement gossip reduce risk.")
+                bullet("gearshape", "Settings has wallet, agent setup, privacy controls, and support tools.")
+                bullet("shield.lefthalf.filled", "Offline payments have safeguards, but no system can remove all risk.")
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) {
                         Button("Try an agent demo") {

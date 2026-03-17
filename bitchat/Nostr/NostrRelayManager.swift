@@ -122,6 +122,10 @@ final class NostrRelayManager: ObservableObject {
                     }
                     SecureLogger.debug("🌐 Connecting to \(self.relays.count) Nostr relays (via Tor)", category: .session)
                     for relay in self.relays {
+                        if let host = Self.relayHost(from: relay.url), GeoRelayDirectory.isBlocked(host: host) {
+                            SecureLogger.debug("NostrRelayManager: skipping blocked relay host \(host)", category: .session)
+                            continue
+                        }
                         self.connectToRelay(relay.url)
                     }
                 }
@@ -129,6 +133,10 @@ final class NostrRelayManager: ObservableObject {
         } else {
             SecureLogger.debug("🌐 Connecting to \(self.relays.count) Nostr relays (direct)", category: .session)
             for relay in self.relays {
+                if let host = Self.relayHost(from: relay.url), GeoRelayDirectory.isBlocked(host: host) {
+                    SecureLogger.debug("NostrRelayManager: skipping blocked relay host \(host)", category: .session)
+                    continue
+                }
                 connectToRelay(relay.url)
             }
         }
@@ -378,11 +386,25 @@ final class NostrRelayManager: ObservableObject {
         var result: [String] = []
         for url in urls {
             if !allowDefaultRelays && Self.defaultRelaySet.contains(url) { continue }
+            if let host = Self.relayHost(from: url),
+               GeoRelayDirectory.isBlocked(host: host) {
+                SecureLogger.debug("NostrRelayManager: skipping blocked relay host \(host)", category: .session)
+                continue
+            }
             if seen.insert(url).inserted {
                 result.append(url)
             }
         }
         return result
+    }
+
+    private static func relayHost(from rawURL: String) -> String? {
+        guard let parsed = URL(string: rawURL) else { return nil }
+        guard var host = parsed.host else { return nil }
+        if let portless = host.split(separator: ":").first {
+            host = String(portless)
+        }
+        return host.lowercased()
     }
     
     /// Unsubscribe from a subscription
@@ -414,6 +436,10 @@ final class NostrRelayManager: ObservableObject {
     private func connectToRelay(_ urlString: String) {
         // Global network policy gate
         guard networkService.activationAllowed else { return }
+        if let host = Self.relayHost(from: urlString), GeoRelayDirectory.isBlocked(host: host) {
+            SecureLogger.debug("NostrRelayManager: blocked relay skipped \(host)", category: .session)
+            return
+        }
         guard let url = URL(string: urlString) else { 
             SecureLogger.warning("Invalid relay URL: \(urlString)", category: .session)
             return 
@@ -636,6 +662,7 @@ final class NostrRelayManager: ObservableObject {
         let ns = error as NSError
         if errorDescription.contains("hostname could not be found") || 
            errorDescription.contains("dns") ||
+           isPermanentNetworkFailure(error) ||
            (ns.domain == NSURLErrorDomain && ns.code == NSURLErrorBadServerResponse) {
             if relays.first(where: { $0.url == relayUrl })?.lastError == nil {
                 SecureLogger.warning("Nostr relay permanent failure for \(relayUrl) - not retrying (code=\(ns.code))", category: .session)
@@ -721,6 +748,8 @@ final class NostrRelayManager: ObservableObject {
         
         // Reset all relay states
         for index in relays.indices {
+            // Keep permanently-failed relays disabled across resets to avoid repeated ATS/TLS spam.
+            if isPermanentNetworkFailure(relays[index].lastError) { continue }
             relays[index].reconnectAttempts = 0
             relays[index].nextReconnectTime = nil
             relays[index].lastError = nil
@@ -735,11 +764,32 @@ final class NostrRelayManager: ObservableObject {
         guard let r = relays.first(where: { $0.url == url }) else { return false }
         if r.reconnectAttempts >= maxReconnectAttempts { return true }
         if let ns = r.lastError as NSError?, ns.domain == NSURLErrorDomain {
+            if isPermanentNetworkFailure(ns) { return true }
             if ns.code == NSURLErrorBadServerResponse || ns.code == NSURLErrorCannotFindHost {
                 return true
             }
         }
         return false
+    }
+
+    private func isPermanentNetworkFailure(_ error: Error?) -> Bool {
+        guard let error else { return false }
+        return isPermanentNetworkFailure(error as NSError)
+    }
+
+    private func isPermanentNetworkFailure(_ ns: NSError) -> Bool {
+        guard ns.domain == NSURLErrorDomain else { return false }
+        switch ns.code {
+        case NSURLErrorSecureConnectionFailed,
+             NSURLErrorServerCertificateUntrusted,
+             NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateHasUnknownRoot,
+             NSURLErrorClientCertificateRejected,
+             NSURLErrorClientCertificateRequired:
+            return true
+        default:
+            return false
+        }
     }
 }
 

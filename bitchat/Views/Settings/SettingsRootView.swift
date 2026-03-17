@@ -1,10 +1,14 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 enum SettingsDestination: Hashable {
     case requesterPreferences
     case wallet
     case providerSetup
-    case advancedProviderSetup
     case support
     case about
 }
@@ -47,84 +51,157 @@ struct SettingsRootView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            Form {
+            List {
                 Section("Profile") {
-                    LabeledContent("Nickname") {
+                    LabeledContent {
                         TextField("nickname", text: nicknameBinding)
                             .autocorrectionDisabled(true)
                             .multilineTextAlignment(.trailing)
-                            .onSubmit {
-                                viewModel.validateAndSaveNickname()
-                            }
+                            .onSubmit { viewModel.validateAndSaveNickname() }
                             #if os(iOS)
                             .textInputAutocapitalization(.never)
                             #endif
+                    } label: {
+                        SettingsIconRow(
+                            icon: "person",
+                            title: "Nickname",
+                            subtitle: "Shown to nearby peers on this device."
+                        )
                     }
-                    Button("Verify identity") {
+                    Button {
                         showVerificationSheet = true
+                    } label: {
+                        SettingsIconRow(
+                            icon: "person.crop.circle.badge.checkmark",
+                            title: "Verify identity",
+                            subtitle: "Compare fingerprints to confirm who you are chatting with."
+                        )
                     }
                 }
 
-                Section("Agents") {
-                    NavigationLink("Requester preferences", value: SettingsDestination.requesterPreferences)
-                    NavigationLink("Wallet", value: SettingsDestination.wallet)
+                Section("Agents & Payments") {
+                    NavigationLink(value: SettingsDestination.requesterPreferences) {
+                        SettingsIconRow(
+                            icon: "slider.horizontal.3",
+                            title: "Requester preferences",
+                            subtitle: "Routing quality, quote behavior, and payment rail preference."
+                        )
+                    }
+                    NavigationLink(value: SettingsDestination.wallet) {
+                        SettingsIconRow(
+                            icon: "wallet.pass",
+                            title: "Wallet setup",
+                            subtitle: "Import Cashu, approve mints, and configure x402."
+                        )
+                    }
                     if viewModel.agentConfig.enabled {
-                        NavigationLink("Provider settings", value: SettingsDestination.providerSetup)
+                        NavigationLink(value: SettingsDestination.providerSetup) {
+                            SettingsIconRow(
+                                icon: "dot.radiowaves.left.and.right",
+                                title: "Provider setup",
+                                subtitle: "Wizard for runtime, model, and payment defaults."
+                            )
+                        }
                         Button(role: .destructive) {
                             showDisableProviderConfirm = true
                         } label: {
-                            Text("Disable provider mode")
+                            SettingsIconRow(
+                                icon: "xmark.circle",
+                                title: "Disable provider mode",
+                                subtitle: "Stop advertising as an agent."
+                            )
                         }
                     } else {
-                        NavigationLink("Enable provider mode", value: SettingsDestination.providerSetup)
+                        NavigationLink(value: SettingsDestination.providerSetup) {
+                            SettingsIconRow(
+                                icon: "plus.circle",
+                                title: "Enable provider mode",
+                                subtitle: "Guide setup for provider runtime and payments."
+                            )
+                        }
                     }
-                    NavigationLink("Advanced provider setup", value: SettingsDestination.advancedProviderSetup)
-                    .foregroundStyle(.secondary)
                 }
 
                 Section("Network & Privacy") {
-                    Toggle("Enable Tor + internet relays", isOn: torEnabledBinding)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        let allowed = networkActivation.activationAllowed
-                        Text("Internet features: \(allowed ? "available" : "paused")")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Text("Availability is gated by location permission or mutual favorites.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                    Toggle(isOn: torEnabledBinding) {
+                        SettingsIconRow(
+                            icon: "shield.lefthalf.filled",
+                            title: "Enable Tor + internet relays",
+                            subtitle: "Allow internet relay transport when policy permits."
+                        )
                     }
+                    let allowed = networkActivation.activationAllowed
+                    SettingsIconRow(
+                        icon: allowed ? "checkmark.circle" : "pause.circle",
+                        title: "Internet features \(allowed ? "available" : "paused")",
+                        subtitle: "Availability follows your privacy activation policy."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    SettingsIconRow(
+                        icon: "network",
+                        title: "Internet policy",
+                        subtitle: "Usage unlocks from location permission or mutual favorites."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
 
                     Button(role: .destructive) {
                         showPanicConfirm = true
                     } label: {
-                        Text("Panic wipe (delete all data)")
+                        SettingsIconRow(
+                            icon: "trash",
+                            title: "Panic wipe (delete all data)",
+                            subtitle: "Remove chats, keys, sessions, wallet data, and settings."
+                        )
                     }
                 }
 
                 Section("Support") {
-                    NavigationLink("Export debug bundle", value: SettingsDestination.support)
+                    NavigationLink(value: SettingsDestination.support) {
+                        SettingsIconRow(
+                            icon: "square.and.arrow.up",
+                            title: "Export debug bundle",
+                            subtitle: "Create a redacted support package."
+                        )
+                    }
                 }
 
                 Section("About") {
-                    NavigationLink("About BitChat", value: SettingsDestination.about)
+                    NavigationLink(value: SettingsDestination.about) {
+                        SettingsIconRow(
+                            icon: "info.circle",
+                            title: "About BitChat",
+                            subtitle: "Core features, privacy model, and quick-start help."
+                        )
+                    }
                 }
             }
+            #if os(iOS)
+            .listStyle(.insetGrouped)
+            #else
+            .listStyle(.inset)
+            #endif
             .navigationTitle("Settings")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Done") { dismiss() }
+        .navigationDestination(for: SettingsDestination.self) { destination in
+            destinationView(for: destination)
+        }
+        .toolbar {
+            if path.isEmpty {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        path.removeAll()
+                        dismiss()
+                    }
                 }
-            }
-            .navigationDestination(for: SettingsDestination.self) { destination in
-                destinationView(for: destination)
-            }
-            .onAppear {
-                guard let initialDestination else { return }
-                guard path.isEmpty else { return }
-                path = [initialDestination]
             }
         }
+        .onAppear {
+            guard let initialDestination else { return }
+            guard path.isEmpty else { return }
+            path = [initialDestination]
+        }
+    }
         .tint(accent)
         .sheet(isPresented: $showVerificationSheet) {
             VerificationSheetView(isPresented: $showVerificationSheet)
@@ -149,6 +226,7 @@ struct SettingsRootView: View {
         } message: {
             Text("This stops advertising as an agent to nearby peers.")
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -160,12 +238,84 @@ struct SettingsRootView: View {
             WalletView()
         case .providerSetup:
             ProviderSetupWizardView()
-        case .advancedProviderSetup:
-            AgentSettingsView()
         case .support:
             SupportExportView()
         case .about:
             AppInfoView()
         }
+    }
+}
+
+struct SettingsIconRow<Accessory: View>: View {
+    let icon: String
+    let title: Text
+    let subtitle: Text?
+    @ViewBuilder let accessory: () -> Accessory
+
+    init(
+        icon: String,
+        title: String,
+        subtitle: String? = nil,
+        @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }
+    ) {
+        self.icon = icon
+        self.title = Text(title)
+        self.subtitle = subtitle.map { Text($0) }
+        self.accessory = accessory
+    }
+
+    init(
+        icon: String,
+        title: LocalizedStringKey,
+        subtitle: LocalizedStringKey? = nil,
+        @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }
+    ) {
+        self.icon = icon
+        self.title = Text(title)
+        self.subtitle = subtitle.map { Text($0) }
+        self.accessory = accessory
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            SafeSystemImage(name: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 22, alignment: .center)
+
+            VStack(alignment: .leading, spacing: subtitle == nil ? 0 : 2) {
+                title
+                    .foregroundStyle(.primary)
+                if let subtitle {
+                    subtitle
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+            accessory()
+        }
+    }
+}
+
+private struct SafeSystemImage: View {
+    let name: String
+
+    var body: some View {
+        #if os(iOS)
+        if UIImage(systemName: name) != nil {
+            Image(systemName: name)
+        } else {
+            Image(systemName: "questionmark.circle")
+        }
+        #elseif os(macOS)
+        if NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil {
+            Image(systemName: name)
+        } else {
+            Image(systemName: "questionmark.circle")
+        }
+        #else
+        Image(systemName: name)
+        #endif
     }
 }

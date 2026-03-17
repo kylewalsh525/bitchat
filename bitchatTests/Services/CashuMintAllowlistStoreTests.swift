@@ -75,5 +75,26 @@ final class CashuMintAllowlistStoreTests: XCTestCase {
             }
         }
     }
-}
 
+    func testImportFailsClosedWhenMintNotApproved() {
+        let keychain = MockKeychain()
+        let defaults = UserDefaults(suiteName: "CashuMintAllowlistStoreTests.import.\(UUID().uuidString)")!
+        let allowlist = CashuMintAllowlistStore(defaults: defaults)
+        let wallet = CashuWalletService(keychain: keychain, allowlist: allowlist)
+
+        let token = CashuTokenParser.exportTokenString(
+            mintURL: "https://mint.not-approved",
+            unit: "sat",
+            proofs: [CashuProof(amount: 5, secret: "secret-import-deny")]
+        )
+
+        XCTAssertNotNil(token)
+        XCTAssertThrowsError(try wallet.importToken("1: \(token ?? "")")) { error in
+            guard case CashuWalletService.WalletError.mintsNotAllowed(let mints) = error else {
+                XCTFail("expected mintsNotAllowed, got \(error)")
+                return
+            }
+            XCTAssertEqual(mints, ["https://mint.not-approved"])
+        }
+    }
+}

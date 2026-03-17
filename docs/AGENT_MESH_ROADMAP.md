@@ -86,9 +86,19 @@ Phase 8 is complete when:
 - Onboarding is first-run, requester-default, and skippable wallet setup is in-app.
 - Settings entrypoint is visible; agent setup/preferences/wallet/panic wipe are discoverable.
 - Wallet is usable without commands (import/export/balance) and mint allowlist consent is enforced (fail-closed).
+- Wallet UI reflects balance/reserved and x402 connectivity changes live while open (no reopen required).
 - P2PK locking uses CashuDevKit on both iOS and macOS (no insecure stubs).
 - Support bundle export is redacted (no bearer proofs/tokens/keys) and sufficient for bug reports.
 - Panic wipe is visible in Settings and clears local keys, agent/payment/wallet stores, and app support caches.
+
+## Next Best Targets (No Trust/Reputation)
+- Phase 4G production hardening:
+  - `P4G-OPS-1` Hosted gateway deployment + operational hardening.
+  - `P4G-FACIL-1` Thirdweb upstream contract/auth/idempotency hardening.
+- Optional rail extensibility:
+  - `P4G-EXT-1` Payment rail adapter interface for EVM/Solana follow-ons (keeps offline constraints explicit).
+- QA loop:
+  - Run `docs/BETA_CHECKLIST.md` as a dogfood matrix and close the top reliability/UX bugs before TestFlight expansion.
 
 ## Post-Phase-4 Acceptance Checks (add to release checklist)
 - Double-spend attempt to two providers: second provider rejects after settlement gossip propagation. (covered by 4B; keep as regression check)

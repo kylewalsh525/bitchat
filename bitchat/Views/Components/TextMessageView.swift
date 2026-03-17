@@ -17,6 +17,7 @@ struct TextMessageView: View {
     @Binding var expandedMessageIDs: Set<String>
 
     @State private var showMintApprovalSheet = false
+    @State private var walletUIRefreshTick = 0
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -84,9 +85,19 @@ struct TextMessageView: View {
                 let normalizedMint = isCashu ? CashuMintAllowlistStore.normalizeMintURL(prompt.mintURL) : ""
                 let mintApproved = isCashu ? viewModel.cashuMintAllowlistStore.isAllowed(mintURL: normalizedMint) : true
                 let mintHost = URL(string: normalizedMint)?.host ?? normalizedMint
+                let mintIsLoopback = {
+                    guard let host = URL(string: normalizedMint)?.host?.lowercased() else { return false }
+                    return host == "localhost" || host == "127.0.0.1"
+                }()
                 let gatewayHost = URL(string: prompt.x402GatewayURL ?? prompt.mintURL)?.host ?? (prompt.x402GatewayURL ?? prompt.mintURL)
                 let expiresLabel = formatExpiresInLabel(expiresAtMs: prompt.expiresAtMs)
                 let settlementLabel = prompt.rail == .x402 ? "Online required" : (prompt.settlementMode == .offlineAccepted ? "Offline accepted" : "Online required")
+                let walletConnected = !(viewModel.thirdwebGuestWalletBridge.walletAddress?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                let bridgeConfigured = !(viewModel.thirdwebGuestWalletBridge.configuredClientID()?
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                let bridgeAvailable = viewModel.thirdwebGuestWalletBridge.isBridgeAvailable
+                let canPay = isCashu ? mintApproved : (bridgeAvailable && bridgeConfigured)
                 let lockLabel: String = {
                     switch prompt.requiresLocking ?? AgentPaymentLockingMode.none {
                     case .p2pk:
@@ -112,11 +123,14 @@ struct TextMessageView: View {
 
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 10) {
-                            Button("Pay now") {
+                            Button {
                                 viewModel.payPendingAgentRequestFromUI(requestID: requestID)
+                            } label: {
+                                Text("Pay now")
+                                    .foregroundStyle(.white)
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(!mintApproved)
+                            .disabled(!canPay)
 
                             Button("Wallet") {
                                 viewModel.isWalletPresented = true
@@ -133,11 +147,14 @@ struct TextMessageView: View {
                             Spacer(minLength: 0)
                         }
                         VStack(alignment: .leading, spacing: 8) {
-                            Button("Pay now") {
+                            Button {
                                 viewModel.payPendingAgentRequestFromUI(requestID: requestID)
+                            } label: {
+                                Text("Pay now")
+                                    .foregroundStyle(.white)
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(!mintApproved)
+                            .disabled(!canPay)
 
                             HStack(spacing: 10) {
                                 Button("Wallet") {
@@ -158,6 +175,11 @@ struct TextMessageView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         if isCashu {
                             Text("Mint: \(mintHost) (\(mintApproved ? "approved" : "approval required"))")
+                            if !mintApproved {
+                                Text("Payment is blocked until you approve this mint.")
+                            } else if mintIsLoopback {
+                                Text("This mint is local-only. It must be running and reachable from the provider device.")
+                            }
                         } else {
                             Text("Gateway: \(gatewayHost)")
                             if let chain = prompt.x402ChainID {
@@ -169,6 +191,16 @@ struct TextMessageView: View {
                             if let payTo = prompt.x402PayTo, !payTo.isEmpty {
                                 Text("Pay to: \(payTo)")
                             }
+                            if !bridgeAvailable {
+                                Text("x402 bridge unavailable on this device.")
+                                    .foregroundStyle(.red)
+                            } else if !bridgeConfigured {
+                                Text("x402 isn't available in this build.")
+                                    .foregroundStyle(.yellow)
+                            } else if !walletConnected {
+                                Text("If you haven't connected yet, BitChat will create a guest wallet when you pay.")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Text("Settlement: \(settlementLabel)")
                         if isCashu {
@@ -179,9 +211,7 @@ struct TextMessageView: View {
                         if let pricingModel = prompt.pricingModel {
                             Text("Pricing: \(pricingModel.rawValue)")
                         }
-                        if isCashu && !mintApproved {
-                            Text("Payment is blocked until you approve this mint.")
-                        } else if isCashu && prompt.settlementMode == .offlineAccepted {
+                        if isCashu && prompt.settlementMode == .offlineAccepted {
                             Text("Offline acceptance can delay final settlement until mint finality.")
                         }
                         if isCashu && (prompt.requiresLocking ?? AgentPaymentLockingMode.none) == .p2pk {
@@ -204,17 +234,19 @@ struct TextMessageView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.secondary.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 1)
                 )
-                .sheet(isPresented: $showMintApprovalSheet) {
-                    MintApprovalSheet(
-                        mints: [normalizedMint],
-                        onCancel: {
-                            showMintApprovalSheet = false
-                        },
-                        onApprove: {
-                            viewModel.cashuMintAllowlistStore.allow(mintURL: normalizedMint)
-                            showMintApprovalSheet = false
-                        }
-                    )
+                .alert("Approve mint?", isPresented: $showMintApprovalSheet) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Approve") {
+                        viewModel.cashuMintAllowlistStore.allow(mintURL: normalizedMint)
+                    }
+                } message: {
+                    Text("Approving allows this device to import and spend tokens from:\n\n\(normalizedMint)")
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .cashuWalletDidUpdate)) { _ in
+                    walletUIRefreshTick += 1
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .thirdwebWalletDidUpdate)) { _ in
+                    walletUIRefreshTick += 1
                 }
             }
         }

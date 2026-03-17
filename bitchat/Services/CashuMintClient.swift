@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(CashuDevKit)
+import CashuDevKit
+#endif
+
 final class CashuMintClient {
     typealias ProxyRequestHandler = @Sendable (MintProxyRequestPacket) async throws -> MintProxyResponsePacket
 
@@ -59,6 +63,32 @@ final class CashuMintClient {
     }
 
     func swap(mintURL: String, payload: CashuPaymentPayloadEnvelope) async throws {
+        #if canImport(CashuDevKit)
+        // Prefer the standards-compliant CDK path first.
+        // This avoids legacy /swap schema probes against modern mints.
+        if payload.proofs.allSatisfy(hasRequiredSwapFields(_:)) {
+            do {
+                try await swapViaCDK(mintURL: mintURL, payload: payload)
+                return
+            } catch let mintError as MintError {
+                // Do not retry legacy fallback for definitive client-side mint failures.
+                // These should surface directly (for example: token already spent).
+                switch mintError {
+                case .badStatus(let status, _):
+                    if (400..<500).contains(status) {
+                        throw mintError
+                    }
+                case .malformedResponse:
+                    throw mintError
+                default:
+                    break
+                }
+            } catch {
+                // Keep legacy HTTP flow as a compatibility fallback.
+            }
+        }
+        #endif
+
         let body = [
             "payment_id": payload.paymentID,
             "request_id": payload.requestID,
@@ -74,12 +104,21 @@ final class CashuMintClient {
                 ]
             }
         ] as [String: Any]
-        _ = try await performRequest(
-            mintURL: mintURL,
-            method: "POST",
-            candidatePaths: ["/v1/swap", "/swap"],
-            body: body
-        )
+        do {
+            _ = try await performRequest(
+                mintURL: mintURL,
+                method: "POST",
+                candidatePaths: ["/v1/swap", "/swap"],
+                body: body
+            )
+        } catch let error as MintError {
+            // Nutshell/NUT-08 mints require swap payloads in the modern "inputs/outputs" shape.
+            // If the legacy request body is rejected for that reason, fall back to CDK swap.
+            guard shouldFallbackToCDKSwap(error: error) else {
+                throw error
+            }
+            try await swapViaCDK(mintURL: mintURL, payload: payload)
+        }
     }
 
     func checkState(mintURL: String, nullifiers: [String]) async throws -> CheckStateResult {
@@ -115,6 +154,7 @@ final class CashuMintClient {
         let bodyJSON = try bodyJSONString(from: body)
 
         var lastError: Error?
+        var preferredFallbackError: MintError?
         for path in candidatePaths {
             guard let url = URL(string: path, relativeTo: baseURL) else { continue }
             var request = URLRequest(url: url)
@@ -137,6 +177,15 @@ final class CashuMintClient {
                 return (data, http.statusCode)
             } catch {
                 lastError = error
+                if let mintError = error as? MintError,
+                   preferredFallbackError == nil,
+                   shouldFallbackToCDKSwap(error: mintError) {
+                    preferredFallbackError = mintError
+                    // A NUT-08 schema mismatch on /v1/swap means retrying legacy fallback
+                    // endpoints (e.g. /swap) cannot succeed. Stop early and let caller
+                    // switch to the CDK swap path.
+                    break
+                }
                 if proxyHandler != nil {
                     if let mintError = error as? MintError {
                         if case .badStatus = mintError {
@@ -149,6 +198,10 @@ final class CashuMintClient {
                 }
                 continue
             }
+        }
+
+        if let preferredFallbackError {
+            throw preferredFallbackError
         }
 
         if let proxyHandler, let proxyMethod {
@@ -235,4 +288,120 @@ final class CashuMintClient {
         let digest = Data(canonical.utf8).sha256Fingerprint()
         return "proxy-\(method.rawValue)-\(String(digest.prefix(24)))"
     }
+
+    private func hasRequiredSwapFields(_ proof: CashuProof) -> Bool {
+        guard let keysetID = proof.id?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !keysetID.isEmpty,
+              let signature = proof.C?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !signature.isEmpty,
+              !proof.secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return true
+    }
+
+    private func shouldFallbackToCDKSwap(error: MintError) -> Bool {
+        guard case .badStatus(let status, let body) = error, status == 422 else {
+            return false
+        }
+        let lowered = body.lowercased()
+        return lowered.contains("inputs")
+            && lowered.contains("outputs")
+            && lowered.contains("field required")
+    }
+
+    private func swapViaCDK(mintURL: String, payload: CashuPaymentPayloadEnvelope) async throws {
+        #if canImport(CashuDevKit)
+        let wallet = try buildWallet(mintURL: mintURL, unit: payload.unit)
+        let inputProofs = try payload.proofs.map(convertToCDKProof)
+        let swapped = try await wallet.swap(
+            amount: nil,
+            amountSplitTarget: .none,
+            inputProofs: inputProofs,
+            spendingConditions: nil,
+            includeFees: true
+        )
+        guard let swapped, !swapped.isEmpty else {
+            throw MintError.malformedResponse
+        }
+        #else
+        _ = mintURL
+        _ = payload
+        throw MintError.badStatus(
+            422,
+            body: "mint expects NUT-08 swap format and CashuDevKit is unavailable"
+        )
+        #endif
+    }
 }
+
+#if canImport(CashuDevKit)
+private extension CashuMintClient {
+    func buildWallet(mintURL: String, unit: String) throws -> Wallet {
+        let db = try WalletSqliteDatabase.newInMemory()
+        let mnemonic = try generateMnemonic()
+        return try Wallet(
+            mintUrl: mintURL,
+            unit: currencyUnit(for: unit),
+            mnemonic: mnemonic,
+            db: db,
+            config: WalletConfig(targetProofCount: nil)
+        )
+    }
+
+    func currencyUnit(for rawUnit: String) -> CurrencyUnit {
+        switch rawUnit.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "sat":
+            return .sat
+        case "msat":
+            return .msat
+        case "usd":
+            return .usd
+        case "eur":
+            return .eur
+        default:
+            return .custom(unit: rawUnit)
+        }
+    }
+
+    func convertToCDKProof(_ proof: CashuProof) throws -> Proof {
+        let keysetID = proof.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let signature = proof.C?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !proof.secret.isEmpty,
+              !keysetID.isEmpty,
+              !signature.isEmpty else {
+            throw MintError.malformedResponse
+        }
+
+        return Proof(
+            amount: Amount(value: proof.amount),
+            secret: proof.secret,
+            c: signature,
+            keysetId: keysetID,
+            witness: parseWitness(proof.witness),
+            dleq: nil
+        )
+    }
+
+    func parseWitness(_ raw: String?) -> Witness? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        guard let data = raw.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        if let signatures = object["signatures"] as? [String] {
+            return .p2pk(signatures: signatures)
+        }
+
+        if let preimage = object["preimage"] as? String {
+            let signatures = object["signatures"] as? [String]
+            return .htlc(preimage: preimage, signatures: signatures)
+        }
+
+        return nil
+    }
+}
+#endif

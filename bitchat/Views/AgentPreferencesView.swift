@@ -9,20 +9,12 @@
 import SwiftUI
 
 struct AgentPreferencesView: View {
-    @Environment(\.dismiss) private var dismiss
-
     var body: some View {
         NavigationStack {
             RequesterPreferencesSettingsView()
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("Done") { dismiss() }
-                    }
-                }
         }
         #if os(macOS)
         .frame(minWidth: 640, minHeight: 720)
         #endif
     }
 }
-

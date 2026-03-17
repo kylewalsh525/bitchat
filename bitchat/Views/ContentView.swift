@@ -66,6 +66,7 @@ struct ContentView: View {
     @State private var showLocationNotes = false
     @State private var notesGeohash: String? = nil
     @State private var imagePreviewURL: URL? = nil
+    @State private var exportMediaURL: URL? = nil
     @State private var recordingAlertMessage: String = ""
     @State private var showRecordingAlert = false
     @State private var isRecordingVoiceNote = false
@@ -214,29 +215,33 @@ struct ContentView: View {
             peopleSheetView
         }
         .sheet(isPresented: $showAppInfo) {
-            AppInfoView(onOpenSettings: {
-                showAppInfo = false
-                openSettings()
-            })
-                .environmentObject(viewModel)
-                .onAppear { viewModel.isAppInfoPresented = true }
-                .onDisappear { viewModel.isAppInfoPresented = false }
+            NavigationStack {
+                AppInfoView(onOpenSettings: {
+                    showAppInfo = false
+                    openSettings()
+                })
+                    .environmentObject(viewModel)
+                    .onAppear { viewModel.isAppInfoPresented = true }
+                    .onDisappear { viewModel.isAppInfoPresented = false }
+            }
         }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $showSettings, onDismiss: {
+            settingsDestination = nil
+        }) {
+            SettingsRootView(initialDestination: settingsDestination)
+                .environmentObject(viewModel)
+                .ignoresSafeArea(.keyboard)
+        }
+        #else
         .sheet(isPresented: $showSettings, onDismiss: {
             settingsDestination = nil
         }) {
             SettingsRootView(initialDestination: settingsDestination)
                 .environmentObject(viewModel)
+                .frame(minWidth: 760, minHeight: 620)
         }
-        .sheet(isPresented: Binding(
-            get: { viewModel.isWalletPresented },
-            set: { viewModel.isWalletPresented = $0 }
-        )) {
-            NavigationStack {
-                WalletView()
-                    .environmentObject(viewModel)
-            }
-        }
+        #endif
         .sheet(isPresented: Binding(
             get: { viewModel.showingFingerprintFor != nil },
             set: { _ in viewModel.showingFingerprintFor = nil }
@@ -291,7 +296,7 @@ struct ContentView: View {
                     showAppInfo = true
                 },
                 onOpenWallet: {
-                    viewModel.isWalletPresented = true
+                    openSettings(destination: .wallet)
                 }
             )
             .environmentObject(viewModel)
@@ -341,7 +346,7 @@ struct ContentView: View {
                     showAppInfo = true
                 },
                 onOpenWallet: {
-                    viewModel.isWalletPresented = true
+                    openSettings(destination: .wallet)
                 }
             )
             .environmentObject(viewModel)
@@ -357,6 +362,18 @@ struct ContentView: View {
                     .environmentObject(viewModel)
             }
         }
+        #if os(iOS)
+        .sheet(isPresented: Binding(
+            get: { exportMediaURL != nil },
+            set: { presenting in
+                if !presenting { exportMediaURL = nil }
+            }
+        )) {
+            if let url = exportMediaURL {
+                MediaFileExportWrapper(url: url)
+            }
+        }
+        #endif
         .alert("Recording Error", isPresented: $showRecordingAlert, actions: {
             Button("OK", role: .cancel) {}
         }, message: {
@@ -426,6 +443,11 @@ struct ContentView: View {
             Button("common.ok", role: .cancel) {}
         } message: {
             Text(viewModel.bluetoothAlertMessage)
+        }
+        .onChange(of: viewModel.isWalletPresented) { isPresented in
+            guard isPresented else { return }
+            openSettings(destination: .wallet)
+            viewModel.isWalletPresented = false
         }
         .onDisappear {
             // Clean up timers
@@ -721,6 +743,25 @@ struct ContentView: View {
                     .padding(.horizontal, 6)
             }
 
+            if let pendingStatus = viewModel.pendingAgentStatusText(for: viewModel.selectedPrivateChatPeer) {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(pendingStatus)
+                        .font(.bitchatSystem(size: 12, design: .rounded))
+                        .foregroundColor(secondaryTextColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.gray.opacity(colorScheme == .dark ? 0.18 : 0.12))
+                )
+                .padding(.horizontal, 6)
+            }
+
             HStack(alignment: .center, spacing: 4) {
                 TextField(
                     "",
@@ -905,77 +946,97 @@ struct ContentView: View {
 
     @ViewBuilder
     private var agentQuoteSelectionStrip: some View {
-        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let nowMs: UInt64 = UInt64(Date().timeIntervalSince1970 * 1000)
+        let activeSelections: [ChatViewModel.AgentQuoteSelectionSummary] = Array(
+            viewModel.activeAgentQuoteSelections.prefix(2)
+        )
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(viewModel.activeAgentQuoteSelections.prefix(2))) { selection in
-                VStack(alignment: .leading, spacing: 8) {
-                    let remainingMs = selection.expiresAtMs > nowMs ? (selection.expiresAtMs - nowMs) : 0
-                    let expiresIn = max(0, Int(remainingMs / 1_000))
-                    HStack(spacing: 8) {
-                        Text("Quotes for '\(selection.role)' • \(selection.quoteID.prefix(8)) • \(expiresIn)s left")
-                            .font(.bitchatSystem(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundColor(textColor)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Button("Dismiss") {
-                            viewModel.dismissPendingAgentQuote(quoteID: selection.quoteID)
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.bitchatSystem(size: 10, design: .monospaced))
-                        .foregroundColor(secondaryTextColor)
-                    }
-
-                    if selection.options.isEmpty {
-                        Text("No quotes yet. Waiting for providers…")
-                            .font(.bitchatSystem(size: 11, design: .monospaced))
-                            .foregroundColor(secondaryTextColor)
-                    } else {
-                        ForEach(Array(selection.options.enumerated()), id: \.element.optionID) { index, option in
-                            Button {
-                                let result = viewModel.selectAgentQuoteOptionFromUI(
-                                    quoteID: selection.quoteID,
-                                    optionID: option.optionID
-                                )
-                                applyQuoteSelectionResult(result)
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Text("\(index + 1)")
-                                        .font(.bitchatSystem(size: 10, weight: .semibold, design: .monospaced))
-                                        .foregroundColor(textColor)
-                                        .frame(width: 14)
-
-                                    let waitLabel = option.waitSeconds == 0 ? "now" : "wait ~\(option.waitSeconds)s"
-                                    Text("\(option.peerNickname) q\(option.qualityScore) \(waitLabel) \(option.estimatedPrice) \(option.unit)")
-                                        .font(.bitchatSystem(size: 11, design: .monospaced))
-                                        .foregroundColor(textColor)
-                                        .lineLimit(1)
-
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill((colorScheme == .dark ? Color.white : Color.black).opacity(0.06))
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Choose quote option \(index + 1)")
-                            .accessibilityHint("Selects \(option.peerNickname) at \(option.estimatedPrice) \(option.unit)")
-                        }
-                    }
-
-                    Text("/agentchoose \(selection.quoteID) <1-\(selection.options.count)>")
-                        .font(.bitchatSystem(size: 10, design: .monospaced))
-                        .foregroundColor(secondaryTextColor)
-                }
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill((colorScheme == .dark ? Color.white : Color.black).opacity(0.04))
-                )
+            ForEach(activeSelections, id: \.quoteID) { selection in
+                agentQuoteSelectionCard(selection, nowMs: nowMs)
             }
         }
+    }
+
+    private func agentQuoteSelectionCard(
+        _ selection: ChatViewModel.AgentQuoteSelectionSummary,
+        nowMs: UInt64
+    ) -> some View {
+        let remainingMs: UInt64 = selection.expiresAtMs > nowMs ? (selection.expiresAtMs - nowMs) : 0
+        let expiresIn: Int = max(0, Int(remainingMs / 1_000))
+        let headerText: String = "Quotes for '\(selection.role)' • \(selection.quoteID.prefix(8)) • \(expiresIn)s left"
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(headerText)
+                    .font(.bitchatSystem(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(textColor)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button("Dismiss") {
+                    viewModel.dismissPendingAgentQuote(quoteID: selection.quoteID)
+                }
+                .buttonStyle(.borderless)
+                .font(.bitchatSystem(size: 10, design: .monospaced))
+                .foregroundColor(secondaryTextColor)
+            }
+
+            if selection.options.isEmpty {
+                Text("No quotes yet. Waiting for providers…")
+                    .font(.bitchatSystem(size: 11, design: .monospaced))
+                    .foregroundColor(secondaryTextColor)
+            } else {
+                ForEach(Array(selection.options.enumerated()), id: \.offset) { index, option in
+                    agentQuoteSelectionOption(selection: selection, index: index, option: option)
+                }
+            }
+
+            Text("/agentchoose \(selection.quoteID) <1-\(selection.options.count)>")
+                .font(.bitchatSystem(size: 10, design: .monospaced))
+                .foregroundColor(secondaryTextColor)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill((colorScheme == .dark ? Color.white : Color.black).opacity(0.04))
+        )
+    }
+
+    private func agentQuoteSelectionOption(
+        selection: ChatViewModel.AgentQuoteSelectionSummary,
+        index: Int,
+        option: ChatViewModel.AgentQuoteSelectionOption
+    ) -> some View {
+        let waitLabel: String = option.waitSeconds == 0 ? "now" : "wait ~\(option.waitSeconds)s"
+        let optionText: String = "\(option.peerNickname) q\(option.qualityScore) \(waitLabel) \(option.estimatedPrice) \(option.unit)"
+
+        return Button {
+            let result = viewModel.selectAgentQuoteOptionFromUI(
+                quoteID: selection.quoteID,
+                optionID: option.optionID
+            )
+            applyQuoteSelectionResult(result)
+        } label: {
+            HStack(spacing: 8) {
+                Text("\(index + 1)")
+                    .font(.bitchatSystem(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundColor(textColor)
+                    .frame(width: 14)
+                Text(optionText)
+                    .font(.bitchatSystem(size: 11, design: .monospaced))
+                    .foregroundColor(textColor)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill((colorScheme == .dark ? Color.white : Color.black).opacity(0.06))
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Choose quote option \(index + 1)")
+        .accessibilityHint("Selects \(option.peerNickname) at \(option.estimatedPrice) \(option.unit)")
     }
 
     private func applyQuoteSelectionResult(_ result: CommandResult) {
@@ -1205,6 +1266,7 @@ struct ContentView: View {
                 HStack(spacing: 12) {
                     Button(action: {
                         withAnimation(.easeInOut(duration: TransportConfig.uiAnimationMediumSeconds)) {
+                            showSidebar = false
                             viewModel.endPrivateChat()
                         }
                     }) {
@@ -1248,7 +1310,7 @@ struct ContentView: View {
                     Button(action: {
                         withAnimation(.easeInOut(duration: TransportConfig.uiAnimationMediumSeconds)) {
                             viewModel.endPrivateChat()
-                            showSidebar = true
+                            showSidebar = false
                         }
                     }) {
                         Image(systemName: "xmark")
@@ -1281,7 +1343,7 @@ struct ContentView: View {
                     let vertical = abs(value.translation.height)
                     guard horizontal > 80, vertical < 60 else { return }
                     withAnimation(.easeInOut(duration: TransportConfig.uiAnimationMediumSeconds)) {
-                        showSidebar = true
+                        showSidebar = false
                         viewModel.endPrivateChat()
                     }
                 }
@@ -1467,7 +1529,7 @@ struct ContentView: View {
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
-                    .onChange(of: isNicknameFieldFocused) { isFocused in
+            .onChange(of: isNicknameFieldFocused) { isFocused in
                         if !isFocused {
                             // Only validate when losing focus
                             viewModel.validateAndSaveNickname()
@@ -1787,6 +1849,13 @@ private extension ContentView {
     }
 
     func mediaSendState(for message: BitchatMessage, mediaURL: URL) -> (isSending: Bool, progress: Double?, canCancel: Bool) {
+        let isOutgoing = mediaURL.path.contains("/outgoing/") || viewModel.isSelfMessage(message)
+        // Incoming media should render immediately even if the message model still
+        // carries a default private-message delivery status.
+        guard isOutgoing else {
+            return (false, nil, false)
+        }
+
         var isSending = false
         var progress: Double?
         if let status = message.deliveryStatus {
@@ -1803,10 +1872,30 @@ private extension ContentView {
                 break
             }
         }
-        let isOutgoing = mediaURL.path.contains("/outgoing/")
         let canCancel = isSending && isOutgoing
         let clamped = progress.map { max(0, min(1, $0)) }
         return (isSending, isSending ? clamped : nil, canCancel)
+    }
+
+    func saveMediaCopy(url: URL) {
+        #if os(iOS)
+        exportMediaURL = url
+        #else
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = url.lastPathComponent
+        panel.prompt = "save"
+        if panel.runModal() == .OK, let destination = panel.url {
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: url, to: destination)
+            } catch {
+                SecureLogger.error("Failed to save media copy: \(error)", category: .session)
+            }
+        }
+        #endif
     }
 
     @ViewBuilder
@@ -1837,7 +1926,7 @@ private extension ContentView {
         let state = mediaSendState(for: message, mediaURL: mediaURL)
         let isOutgoing = mediaURL.path.contains("/outgoing/")
         let isAuthoredByUs = isOutgoing || (message.senderPeerID == viewModel.meshService.myPeerID)
-        let shouldBlurImage = !isAuthoredByUs
+        let shouldBlurImage = !isAuthoredByUs && !message.isPrivate
         let cancelAction: (() -> Void)? = state.canCancel ? { viewModel.cancelMediaSend(messageID: message.id) } : nil
 
         VStack(alignment: .leading, spacing: 2) {
@@ -1873,7 +1962,10 @@ private extension ContentView {
                                 imagePreviewURL = url
                             }
                         },
-                        onDelete: shouldBlurImage ? {
+                        onSave: {
+                            saveMediaCopy(url: url)
+                        },
+                        onDelete: (!message.isPrivate && shouldBlurImage) ? {
                             viewModel.deleteMediaMessage(messageID: message.id)
                         } : nil
                     )
@@ -2319,6 +2411,20 @@ struct ImagePreviewView: View {
     }
 #endif
 }
+
+#if os(iOS)
+private struct MediaFileExportWrapper: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let controller = UIDocumentPickerViewController(forExporting: [url])
+        controller.shouldShowFileExtensions = true
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+}
+#endif
 
 private struct DraftAttachmentThumbnailView: View {
     let attachment: ChatViewModel.DraftAttachment

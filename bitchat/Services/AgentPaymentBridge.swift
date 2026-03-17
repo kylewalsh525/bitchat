@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Security)
+import Security
+#endif
 
 struct AgentOfflineRiskPolicy {
     let maxOfflinePerPeer: Int
@@ -160,13 +163,12 @@ final class AgentPaymentBridge {
 
         let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let expiresAtMs = nowMs + UInt64(paymentTerms.requestTTLSeconds) * 1000
-        let paymentID = UUID().uuidString
+        let paymentID = makePaymentID()
         switch paymentTerms.paymentRail {
         case .none:
             return nil
         case .cashu:
-            guard let rawMintURL = paymentTerms.acceptedMints.first else { return nil }
-            let mintURL = CashuMintAllowlistStore.normalizeMintURL(rawMintURL)
+            guard let mintURL = selectPreferredMintURL(from: paymentTerms.acceptedMints) else { return nil }
             guard !mintURL.isEmpty else { return nil }
 
             lockKeyStore.pruneExpired(nowMs: nowMs, maxDeletes: 32)
@@ -211,6 +213,12 @@ final class AgentPaymentBridge {
             )
 
             guard let encoded = envelope.encodeString() else {
+                if lockMode == .p2pk {
+                    lockKeyStore.delete(requestID: requestID, paymentID: paymentID)
+                }
+                return nil
+            }
+            if encoded.utf8.count > AgentMeshConstants.maxTLVStringBytes {
                 if lockMode == .p2pk {
                     lockKeyStore.delete(requestID: requestID, paymentID: paymentID)
                 }
@@ -266,6 +274,7 @@ final class AgentPaymentBridge {
                 facilitatorID: paymentTerms.x402FacilitatorID ?? "thirdweb"
             )
             guard let encoded = envelope.encodeString() else { return nil }
+            guard encoded.utf8.count <= AgentMeshConstants.maxTLVStringBytes else { return nil }
             let record = AgentPaymentRecord(
                 requestID: requestID,
                 sessionID: sessionID,
@@ -373,7 +382,8 @@ final class AgentPaymentBridge {
             guard envelope.requestID == requestID else {
                 throw BridgeError.requestMismatch
             }
-            if sessionID != envelope.sessionID {
+            if let expectedSessionID = envelope.sessionID,
+               sessionID != expectedSessionID {
                 throw BridgeError.sessionMismatch
             }
             guard let wallet = x402Wallet else {
@@ -542,7 +552,11 @@ final class AgentPaymentBridge {
 
         let receiptPaymentID = receipt.paymentID ?? record.paymentID
         if receipt.status == .rejected {
-            wallet.rollbackReserved(paymentID: receiptPaymentID)
+            if shouldCommitReservedOnRejection(details: receipt.details) {
+                wallet.commitReserved(paymentID: receiptPaymentID)
+            } else {
+                wallet.rollbackReserved(paymentID: receiptPaymentID)
+            }
         } else {
             wallet.commitReserved(paymentID: receiptPaymentID)
         }
@@ -803,8 +817,9 @@ final class AgentPaymentBridge {
             }
             return AgentPaymentEvaluation(receipt: receipt, shouldAdvanceFlow: true)
         } catch {
+            let swapFailure = mintSwapFailureMessage(error, mintURL: outboundForSwap.mintURL)
             guard record.settlementMode == .offlineAccepted else {
-                return reject(error.localizedDescription, payloadEnvelope.nullifiers)
+                return reject(swapFailure, payloadEnvelope.nullifiers)
             }
 
             let peerOutstanding = store.offlineOutstandingCount(for: peerID.id)
@@ -1116,7 +1131,65 @@ final class AgentPaymentBridge {
         return terms.pricePerRequest
     }
 
-    func finalizePendingOfflinePayments(enablePaymentLocking: Bool = true) async {
+    private func makePaymentID() -> String {
+        var bytes = [UInt8](repeating: 0, count: 12)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status == errSecSuccess {
+            return Data(bytes)
+                .base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+        }
+        return UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
+
+    private func selectPreferredMintURL(from acceptedMints: [String]) -> String? {
+        let normalized = acceptedMints
+            .map(CashuMintAllowlistStore.normalizeMintURL)
+            .filter { !$0.isEmpty }
+        guard !normalized.isEmpty else { return nil }
+        let unique = Array(NSOrderedSet(array: normalized)) as? [String] ?? normalized
+        if let nonLoopback = unique.first(where: { !isLoopbackMintURL($0) }) {
+            return nonLoopback
+        }
+        return unique.first
+    }
+
+    private func isLoopbackMintURL(_ mintURL: String) -> Bool {
+        guard let url = URL(string: mintURL), let host = url.host?.lowercased() else {
+            return false
+        }
+        return host == "127.0.0.1" || host == "localhost"
+    }
+
+    private func mintSwapFailureMessage(_ error: Error, mintURL: String) -> String {
+        let reason = error.localizedDescription
+        if isLoopbackMintURL(mintURL) {
+            return "mint \(mintURL) is local-only or offline (\(reason))"
+        }
+        return "mint finalize failed at \(mintURL) (\(reason))"
+    }
+
+    private func shouldCommitReservedOnRejection(details: String?) -> Bool {
+        let normalized = details?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        guard !normalized.isEmpty else { return false }
+        if normalized.contains("already spent") {
+            return true
+        }
+        if normalized.contains("payment replay detected") {
+            return true
+        }
+        if normalized.contains("token already spent") {
+            return true
+        }
+        return false
+    }
+
+    func finalizePendingOfflinePayments(enablePaymentLocking: Bool = true) async -> Int {
+        var finalizedCount = 0
         lockKeyStore.pruneExpired(maxDeletes: 64)
         let pending = store.pendingOfflineFinalizations()
         for record in pending {
@@ -1162,6 +1235,7 @@ final class AgentPaymentBridge {
                     nullifiers: payloadEnvelope.nullifiers,
                     notaryReceipts: record.notaryReceipts
                 )
+                finalizedCount += 1
                 if enablePaymentLocking, (record.requiresLocking ?? AgentPaymentLockingMode.none) == .p2pk {
                     lockKeyStore.delete(requestID: record.requestID, paymentID: record.paymentID)
                 }
@@ -1169,5 +1243,6 @@ final class AgentPaymentBridge {
                 continue
             }
         }
+        return finalizedCount
     }
 }

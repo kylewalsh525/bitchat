@@ -9,6 +9,79 @@ import Foundation
 import BitLogger
 
 extension ChatViewModel {
+    private var imageDeliveryStatusTimeout: TimeInterval { 180 }
+
+    @MainActor
+    func pendingAgentStatusText(for threadID: PeerID?) -> String? {
+        guard let threadID else { return nil }
+        let now = Date()
+        let hasPendingImageDelivery = pendingAgentImageDeliveries.values.contains {
+            $0.threadID == threadID && now.timeIntervalSince($0.startedAt) < imageDeliveryStatusTimeout
+        }
+        let matches = pendingAgentRequests.filter { $0.value.threadID == threadID }
+        guard let (requestID, context) = matches.max(by: { $0.value.sentAt < $1.value.sentAt }) else {
+            if hasPendingImageDelivery {
+                return "Helper is delivering your image over mesh…"
+            }
+            return nil
+        }
+        if pendingAgentPayments[requestID] != nil {
+            return "Waiting for payment so the helper can continue."
+        }
+        if context.attachmentCount != nil {
+            return "Working on your request. Images can take a moment to appear."
+        }
+        return "Working on your request…"
+    }
+
+    @MainActor
+    func markPendingAgentImageDeliveryIfNeeded(
+        requestID: String,
+        threadID: PeerID,
+        role: String,
+        content: String,
+        isError: Bool
+    ) {
+        prunePendingAgentImageDeliveries()
+        guard !isError else {
+            pendingAgentImageDeliveries.removeValue(forKey: requestID)
+            return
+        }
+        let normalizedRole = AgentProviderRole(normalizing: role)
+        let normalizedContent = content.lowercased()
+        let likelyImageResponse = normalizedRole == .image
+            || normalizedContent.contains("image generated")
+            || normalizedContent.contains("delivering over mesh")
+            || normalizedContent.contains("image response")
+        guard likelyImageResponse else {
+            pendingAgentImageDeliveries.removeValue(forKey: requestID)
+            return
+        }
+        pendingAgentImageDeliveries[requestID] = PendingAgentImageDelivery(
+            requestID: requestID,
+            threadID: threadID,
+            startedAt: Date()
+        )
+    }
+
+    @MainActor
+    func clearPendingAgentImageDelivery(for threadID: PeerID) {
+        prunePendingAgentImageDeliveries()
+        let requestIDs = pendingAgentImageDeliveries.compactMap { requestID, value in
+            value.threadID == threadID ? requestID : nil
+        }
+        for requestID in requestIDs {
+            pendingAgentImageDeliveries.removeValue(forKey: requestID)
+        }
+    }
+
+    @MainActor
+    private func prunePendingAgentImageDeliveries(now: Date = Date()) {
+        pendingAgentImageDeliveries = pendingAgentImageDeliveries.filter {
+            now.timeIntervalSince($0.value.startedAt) < imageDeliveryStatusTimeout
+        }
+    }
+
     @MainActor
     func addAgentRequestDM(requestID: String, role: String, prompt: String, peerID: PeerID, peerNickname: String, outgoing: Bool) {
         let prefix = "[agent \(role)]"

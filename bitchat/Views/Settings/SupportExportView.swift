@@ -8,14 +8,22 @@ struct SupportExportView: View {
     @State private var exportedURL: URL? = nil
     @State private var statusText: String? = nil
 
+    private var surfaceBackground: Color {
+        #if os(iOS)
+        return Color(.systemBackground)
+        #else
+        return Color(.windowBackgroundColor)
+        #endif
+    }
+
     var body: some View {
         Form {
             Section {
-                Text("Export a redacted debug bundle for beta support.")
-                    .foregroundStyle(.secondary)
-                Text("No Cashu tokens, proofs, or private keys are included.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                SettingsIconRow(
+                    icon: "doc.text.magnifyingglass",
+                    title: "Export a redacted debug bundle for beta support.",
+                    subtitle: "No Cashu tokens, proofs, or private keys are included."
+                )
             }
 
             Section {
@@ -47,17 +55,22 @@ struct SupportExportView: View {
             }
 
             Section("Includes") {
-                Text("App version + platform")
-                Text("Feature flags (agent runtime/payments/locking)")
-                Text("Agent config (redacted)")
-                Text("Wallet summary (balances + reserved)")
-                Text("Payment store summary (counts + statuses)")
-                Text("Recent agent/payment events (redacted)")
+                SettingsIconRow(icon: "iphone", title: "App version + platform")
+                SettingsIconRow(icon: "switch.2", title: "Feature flags (agent runtime/payments/locking)")
+                SettingsIconRow(icon: "person.crop.rectangle", title: "Agent config (redacted)")
+                SettingsIconRow(icon: "wallet.pass", title: "Wallet summary (balances + reserved)")
+                SettingsIconRow(icon: "tray.2", title: "Payment store summary (counts + statuses)")
+                SettingsIconRow(icon: "clock.arrow.circlepath", title: "Recent agent/payment events (redacted)")
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
         }
         .navigationTitle("Support")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .scrollContentBackground(.hidden)
+        .background(surfaceBackground)
     }
 
     private func export() {
@@ -76,4 +89,3 @@ struct SupportExportView: View {
         }
     }
 }
-

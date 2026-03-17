@@ -176,7 +176,8 @@ extension ChatViewModel {
         let requestID = UUID().uuidString
         let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
         let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
-        let ttlMs = TransportConfig.agentRequestTTLms
+        let ttlMs = effectiveAgentRequestTTLms(for: session.role, requestedTTLms: TransportConfig.agentRequestTTLms)
+        let retries = effectiveAgentRequestRetryBudget(for: session.role)
         let request = AgentRequestPacket(
             requestID: requestID,
             role: session.role,
@@ -202,7 +203,7 @@ extension ChatViewModel {
             draftAttachments: draftAttachments,
             createdAtMs: createdAtMs,
             ttlMs: ttlMs,
-            retriesLeft: TransportConfig.agentRequestMaxRetries,
+            retriesLeft: retries,
             sentAt: Date()
         )
 
@@ -253,30 +254,30 @@ extension ChatViewModel {
     func sendAgentAttachments(_ attachments: [AgentRuntimeAttachment], session: AgentSession) {
         guard !attachments.isEmpty else { return }
 
+        var sentImage = false
         for attachment in attachments {
-            let mime = MimeType(attachment.mimeType) ?? .octetStream
-            guard mime.isAllowed else {
-                addSystemMessage("unsupported attachment type: \(attachment.mimeType)")
-                continue
-            }
-            guard FileTransferLimits.isValidPayload(attachment.data.count) else {
-                addSystemMessage("attachment too large to send")
+            let inferredMime = MimeType(attachment.mimeType) ?? .octetStream
+            if inferredMime.category == .image, sentImage {
+                // Keep image generation deterministic for mesh delivery: send one image per request.
                 continue
             }
 
-            guard let url = saveAgentAttachment(data: attachment.data, mime: mime, fileNameHint: attachment.fileName) else {
+            guard let prepared = prepareAgentAttachmentForMesh(attachment) else {
                 addSystemMessage("failed to save attachment")
                 continue
             }
+            if prepared.mime.category == .image {
+                sentImage = true
+            }
 
             let marker: String
-            switch mime.category {
+            switch prepared.mime.category {
             case .audio:
-                marker = "[voice] \(url.lastPathComponent)"
+                marker = "[voice] \(prepared.url.lastPathComponent)"
             case .image:
-                marker = "[image] \(url.lastPathComponent)"
+                marker = "[image] \(prepared.url.lastPathComponent)"
             case .file:
-                marker = "[file] \(url.lastPathComponent)"
+                marker = "[file] \(prepared.url.lastPathComponent)"
             }
 
             let messageID = UUID().uuidString
@@ -300,11 +301,11 @@ extension ChatViewModel {
             objectWillChange.send()
 
             let packet = BitchatFilePacket(
-                fileName: url.lastPathComponent,
-                fileSize: UInt64(attachment.data.count),
-                mimeType: mime.mimeString,
+                fileName: prepared.url.lastPathComponent,
+                fileSize: UInt64(prepared.data.count),
+                mimeType: prepared.mime.mimeString,
                 contextID: session.sessionID,
-                content: attachment.data
+                content: prepared.data
             )
             guard let _ = packet.encode() else {
                 addSystemMessage("failed to encode attachment")
@@ -331,19 +332,91 @@ extension ChatViewModel {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
 
             let safeName = (fileNameHint as NSString).lastPathComponent
-            let fileName: String
+            var fileName: String
             if safeName.isEmpty || safeName == "." || safeName == ".." {
                 fileName = "agent_\(UUID().uuidString.prefix(8)).\(mime.defaultExtension)"
             } else {
                 fileName = safeName
+                if (fileName as NSString).pathExtension.isEmpty {
+                    fileName += ".\(mime.defaultExtension)"
+                }
             }
-            let url = directory.appendingPathComponent(fileName)
+            let url = makeUniqueAgentAttachmentURL(in: directory, fileName: fileName)
             try data.write(to: url, options: [.atomic])
             return url
         } catch {
             SecureLogger.error("Failed to save agent attachment: \(error)", category: .session)
             return nil
         }
+    }
+
+    @MainActor
+    private func prepareAgentAttachmentForMesh(_ attachment: AgentRuntimeAttachment) -> (url: URL, data: Data, mime: MimeType)? {
+        let mime = MimeType(attachment.mimeType) ?? .octetStream
+        guard mime.isAllowed else {
+            addSystemMessage("unsupported attachment type: \(attachment.mimeType)")
+            return nil
+        }
+
+        if mime.category == .image, let preparedImage = prepareAgentImageAttachmentForMesh(attachment) {
+            return preparedImage
+        }
+
+        guard FileTransferLimits.isValidPayload(attachment.data.count) else {
+            addSystemMessage("attachment too large to send")
+            return nil
+        }
+        guard let url = saveAgentAttachment(data: attachment.data, mime: mime, fileNameHint: attachment.fileName) else {
+            return nil
+        }
+        return (url: url, data: attachment.data, mime: mime)
+    }
+
+    @MainActor
+    private func prepareAgentImageAttachmentForMesh(_ attachment: AgentRuntimeAttachment) -> (url: URL, data: Data, mime: MimeType)? {
+        do {
+            let base = try applicationFilesDirectory()
+            let stagingDir = base.appendingPathComponent("images/runtime-staging", isDirectory: true)
+            try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true, attributes: nil)
+
+            let inferred = MimeType(attachment.mimeType) ?? .jpeg
+            let inputName = "runtime_\(UUID().uuidString).\(inferred.defaultExtension)"
+            let inputURL = stagingDir.appendingPathComponent(inputName)
+            try attachment.data.write(to: inputURL, options: [.atomic])
+            defer { try? FileManager.default.removeItem(at: inputURL) }
+
+            // Normalize to JPEG and strip metadata before mesh transfer.
+            let processedURL = try ImageUtils.processImage(at: inputURL, maxDimension: 1024)
+            let processedData = try Data(contentsOf: processedURL)
+            guard processedData.count <= FileTransferLimits.maxImageBytes else {
+                addSystemMessage("image attachment too large to send")
+                return nil
+            }
+            return (url: processedURL, data: processedData, mime: .jpeg)
+        } catch {
+            SecureLogger.warning("Failed to preprocess agent image attachment: \(error)", category: .session)
+            return nil
+        }
+    }
+
+    private func makeUniqueAgentAttachmentURL(in directory: URL, fileName: String) -> URL {
+        var candidate = directory.appendingPathComponent(fileName)
+        if !FileManager.default.fileExists(atPath: candidate.path) {
+            return candidate
+        }
+
+        let baseName = (fileName as NSString).deletingPathExtension
+        let ext = (fileName as NSString).pathExtension
+        var counter = 1
+        while counter < 100 {
+            let nextName = ext.isEmpty ? "\(baseName) (\(counter))" : "\(baseName) (\(counter)).\(ext)"
+            candidate = directory.appendingPathComponent(nextName)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            counter += 1
+        }
+        return directory.appendingPathComponent("\(baseName)_\(UUID().uuidString).\(ext.isEmpty ? "dat" : ext)")
     }
 
     @MainActor
@@ -465,8 +538,9 @@ extension ChatViewModel {
             peerNickname: alias,
             seedHistory: record.history
         )
+        hydrateResumedSessionHistory(record.history, in: session)
         selectedPrivateChatPeer = session.threadID
-        addLocalPrivateSystemMessage("session resumed; history will be included on first message", to: session.threadID)
+        addLocalPrivateSystemMessage("session resumed", to: session.threadID)
         return .success(message: nil)
     }
 
@@ -532,6 +606,44 @@ extension ChatViewModel {
         default:
             return .error(message: "usage: /agentsession <list|resume|new|end> [id]")
         }
+    }
+
+    @MainActor
+    private func hydrateResumedSessionHistory(_ history: [AgentSessionMessage], in session: AgentSession) {
+        guard !history.isEmpty else { return }
+        var existing = privateChats[session.threadID] ?? []
+        let existingIDs = Set(existing.map { $0.id })
+        let startDate = Date().addingTimeInterval(-Double(history.count))
+
+        for (index, entry) in history.enumerated() {
+            let messageID = "agent-history-\(session.sessionID)-\(index)"
+            guard !existingIDs.contains(messageID) else { continue }
+
+            let normalizedRole = entry.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let isUser = normalizedRole == "user"
+            let sender = isUser ? nickname : session.peerNickname
+            let senderPeerID: PeerID? = isUser ? meshService.myPeerID : session.threadID
+            let timestamp = startDate.addingTimeInterval(Double(index))
+            let message = BitchatMessage(
+                id: messageID,
+                sender: sender,
+                content: entry.content,
+                timestamp: timestamp,
+                isRelay: false,
+                originalSender: nil,
+                isPrivate: true,
+                recipientNickname: session.peerNickname,
+                senderPeerID: senderPeerID,
+                mentions: nil,
+                deliveryStatus: .sent
+            )
+            existing.append(message)
+        }
+
+        existing.sort { $0.timestamp < $1.timestamp }
+        privateChats[session.threadID] = existing
+        privateChatManager.sanitizeChat(for: session.threadID)
+        objectWillChange.send()
     }
 
  

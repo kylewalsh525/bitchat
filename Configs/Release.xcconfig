@@ -16,6 +16,9 @@ APP_BUNDLE_ID = chat.bitchat
 PRODUCT_BUNDLE_IDENTIFIER = $(APP_BUNDLE_ID)
 APP_GROUP_ID = group.$(APP_BUNDLE_ID)
 
+// thirdweb (x402). Leave empty to compile without an app-configured client id.
+THIRDWEB_CLIENT_ID =
+
 USE_APP_GROUPS = YES
 APP_ENTITLEMENTS_YES = bitchat/bitchat.entitlements
 APP_ENTITLEMENTS_NO = bitchat/bitchat.noappgroups.entitlements

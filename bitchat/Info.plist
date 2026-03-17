@@ -31,6 +31,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>AppGroupID</key>
 	<string>$(APP_GROUP_ID)</string>
+	<key>ThirdwebClientID</key>
+	<string>$(THIRDWEB_CLIENT_ID)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>

@@ -84,6 +84,41 @@ final class AgentPaymentStoreTests: XCTestCase {
         XCTAssertEqual(Set(record?.nullifiers ?? []), Set(["n1", "n2"]))
     }
 
+    func testRejectedReceiptReleasesNullifierReservation() {
+        let store = AgentPaymentStore(storeURL: storeURL)
+        store.recordPaymentRequest(makeRecord(requestID: "req-1", paymentID: "pay-1"))
+        store.recordPaymentRequest(makeRecord(requestID: "req-2", paymentID: "pay-2"))
+
+        XCTAssertEqual(
+            store.validateIncomingPayload(requestID: "req-1", paymentID: "pay-1", nullifiers: ["n1"]),
+            .accepted
+        )
+        store.markReceipt(
+            requestID: "req-1",
+            status: .rejected,
+            details: "invalid payment terms",
+            nullifiers: ["n1"]
+        )
+
+        let second = store.validateIncomingPayload(requestID: "req-2", paymentID: "pay-2", nullifiers: ["n1"])
+        XCTAssertEqual(second, .accepted)
+    }
+
+    func testValidateIncomingPayloadClearsStaleRejectedMapping() {
+        let store = AgentPaymentStore(storeURL: storeURL)
+        store.recordPaymentRequest(makeRecord(requestID: "req-1", paymentID: "pay-1"))
+        store.recordPaymentRequest(makeRecord(requestID: "req-2", paymentID: "pay-2"))
+
+        XCTAssertEqual(
+            store.validateIncomingPayload(requestID: "req-1", paymentID: "pay-1", nullifiers: ["n-stale"]),
+            .accepted
+        )
+        store.markFailed(requestID: "req-1", details: "network failure")
+
+        let second = store.validateIncomingPayload(requestID: "req-2", paymentID: "pay-2", nullifiers: ["n-stale"])
+        XCTAssertEqual(second, .accepted)
+    }
+
     func testCacheIncomingPayloadPersistsPayloadWithoutChangingState() {
         let store = AgentPaymentStore(storeURL: storeURL)
         store.recordPaymentRequest(makeRecord(requestID: "req-1", paymentID: "pay-1"))

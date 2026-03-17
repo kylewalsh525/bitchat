@@ -95,7 +95,7 @@ struct LocationChannelsSheet: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 12) {
                     Text(Strings.title)
@@ -167,7 +167,6 @@ struct LocationChannelsSheet: View {
                 manager.refreshChannels()
             }
         }
-        .onChange(of: manager.availableChannels) { _ in }
     }
 
     private var closeButton: some View {

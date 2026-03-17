@@ -2,9 +2,50 @@ import Foundation
 
 extension ChatViewModel {
     @MainActor
+    func notifyWalletStateChanged(reason: String, requestID: String? = nil, rail: AgentPaymentRail?) {
+        var payload: [String: String] = [
+            WalletNotificationKeys.source: "ChatViewModel",
+            WalletNotificationKeys.reason: reason
+        ]
+        if let requestID {
+            payload[WalletNotificationKeys.requestID] = requestID
+        }
+        if let rail {
+            payload[WalletNotificationKeys.rail] = rail.rawValue
+            let name: Notification.Name = rail == .cashu ? .cashuWalletDidUpdate : .thirdwebWalletDidUpdate
+            NotificationCenter.default.post(name: name, object: self, userInfo: payload)
+            return
+        }
+        NotificationCenter.default.post(name: .cashuWalletDidUpdate, object: self, userInfo: payload)
+        NotificationCenter.default.post(name: .thirdwebWalletDidUpdate, object: self, userInfo: payload)
+    }
+
+    @MainActor
+    private func updateLastX402PaymentContext(from prompt: AgentPaymentPrompt, updatedAt: Date = Date()) {
+        guard prompt.rail == .x402,
+              let chainID = prompt.x402ChainID,
+              let tokenAddress = prompt.x402TokenAddress,
+              let payTo = prompt.x402PayTo,
+              let gatewayURL = prompt.x402GatewayURL else {
+            return
+        }
+        lastX402PaymentContext = LastX402PaymentContext(
+            requestID: prompt.requestID,
+            paymentID: prompt.paymentID,
+            chainID: chainID,
+            tokenAddress: tokenAddress,
+            payTo: payTo,
+            gatewayURL: gatewayURL,
+            updatedAt: updatedAt
+        )
+    }
+
+    @MainActor
     func requestIDForAgentMessage(_ message: BitchatMessage) -> String? {
         let id = message.id
-        let prefixes = ["agent-resp-in-", "agent-resp-out-", "agent-req-in-", "agent-req-out-", "agent-resp-"]
+        // Payment UI should only appear once per request. If we key off request *and* response
+        // message IDs, the prompt card renders multiple times in the transcript.
+        let prefixes = ["agent-resp-in-", "agent-resp-out-", "agent-resp-"]
         for prefix in prefixes where id.hasPrefix(prefix) {
             return String(id.dropFirst(prefix.count))
         }
@@ -43,9 +84,16 @@ extension ChatViewModel {
             guard let self else { return }
             Task { [weak self] in
                 guard let self else { return }
-                await self.agentPaymentBridge.finalizePendingOfflinePayments(
+                let finalizedCount = await self.agentPaymentBridge.finalizePendingOfflinePayments(
                     enablePaymentLocking: self.agentMeshFlags.enablePaymentLocking
                 )
+                if finalizedCount > 0 {
+                    await self.notifyWalletStateChanged(
+                        reason: "offline-finalization",
+                        requestID: nil,
+                        rail: .cashu
+                    )
+                }
             }
         }
     }
@@ -1126,6 +1174,9 @@ extension ChatViewModel {
 
         clearDeferredAgentResponses(for: response.requestID)
         pendingAgentPayments[response.requestID] = prompt
+        if rail == .x402 {
+            updateLastX402PaymentContext(from: prompt)
+        }
         Task {
             let mode = settlementMode == .offlineAccepted ? "offline-accepted" : "online-required"
             let locking = lockMode.rawValue
@@ -1278,6 +1329,11 @@ extension ChatViewModel {
                 sendProxyRequest: proxyRequestClosure
             )
             meshService.sendAgentPaymentPayload(packet, to: prompt.peerID)
+            notifyWalletStateChanged(
+                reason: "outbound-payload-sent",
+                requestID: requestID,
+                rail: prompt.rail
+            )
             setAgentSessionPaymentState(sessionID: prompt.sessionID, threadID: thread, state: .paid)
             Task { await SupportEventLog.shared.record(category: "payment", message: "pay sent id=\(requestID.prefix(8)) to=\(prompt.peerID.id)") }
             if let trancheIndex = prompt.trancheIndex, let trancheCount = prompt.trancheCount {
@@ -1316,6 +1372,12 @@ extension ChatViewModel {
         let threadID = pendingAgentRequests[receipt.requestID]?.threadID
             ?? (receipt.sessionID.flatMap { agentThreadsBySessionID[$0] })
             ?? peerID
+        let rail: AgentPaymentRail = (activePrompt?.rail ?? .cashu)
+        notifyWalletStateChanged(
+            reason: "receipt-updated",
+            requestID: receipt.requestID,
+            rail: rail
+        )
 
         let statusText: String
         switch receipt.status {
@@ -1593,8 +1655,21 @@ extension ChatViewModel {
             return
         }
 
+        let inboundProcessingKey = "\(peerID.id)|\(packet.requestID)"
+        if inFlightInboundPaymentRequestKeys.contains(inboundProcessingKey) {
+            return
+        }
+        inFlightInboundPaymentRequestKeys.insert(inboundProcessingKey)
+
+        addLocalPrivateSystemMessage("payment received; validating…", to: pending.session.threadID)
+
         Task { [weak self] in
             guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.inFlightInboundPaymentRequestKeys.remove(inboundProcessingKey)
+                }
+            }
             let notaryRequirement = self.offlineNotaryRequirement(for: terms)
             let evaluation = await self.agentPaymentBridge.evaluateIncomingPaymentDetailed(
                 packet: packet,
@@ -1631,6 +1706,17 @@ extension ChatViewModel {
                 switch outboundReceipt.status {
                 case .acceptedOffline, .finalizedOnline:
                     guard evaluation.shouldAdvanceFlow else { return }
+                    let statusLine: String = {
+                        switch outboundReceipt.status {
+                        case .finalizedOnline:
+                            return "payment accepted and finalized online"
+                        case .acceptedOffline:
+                            return "payment accepted offline; finalization queued"
+                        case .rejected:
+                            return "payment rejected"
+                        }
+                    }()
+                    self.addLocalPrivateSystemMessage(statusLine, to: pending.session.threadID)
                     if let payloadEnvelope,
                        let announceContent = self.agentSettlementGossip.registerAcceptedPayment(
                             paymentID: payloadEnvelope.paymentID,
@@ -2160,8 +2246,21 @@ extension ChatViewModel {
         session: AgentSession,
         senderName: String
     ) {
-        Task { [weak self, agentRuntime] in
-            guard let self else { return }
+        let executionKey = providerRuntimeExecutionKey(
+            requestID: request.requestID,
+            peerID: peerID,
+            sessionID: session.sessionID
+        )
+        guard beginProviderRuntimeExecution(key: executionKey) else {
+            return
+        }
+
+        Task { [agentRuntime] in
+            defer {
+                Task { @MainActor in
+                    self.endProviderRuntimeExecution(key: executionKey)
+                }
+            }
             let expected = Int(request.attachmentCount ?? 0)
             let requestStart = Date().addingTimeInterval(-self.agentAttachmentLookbackSeconds)
             let pendingAttachments = expected > 0

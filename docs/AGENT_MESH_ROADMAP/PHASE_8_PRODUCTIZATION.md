@@ -10,6 +10,7 @@ Implemented:
 - Requester first-run onboarding (requester-default, wallet step skippable)
 - Provider enablement wizard (guided, safe defaults)
 - Wallet UI (import/export/balance/reserved) + mint allowlist consent (fail-closed)
+- Live wallet state reflection across Cashu + x402 (notification-driven refresh while Wallet/prompt UI is open)
 - Support bundle export (redacted)
 - macOS CashuDevKit linking + real P2PK locking (no stub; Xcode builds)
 - Panic wipe now clears agent/payment/wallet state (stores + keychain) and app support caches
@@ -69,6 +70,21 @@ Resolved in this phase:
   - `bitchat/Views/Wallet/WalletView.swift` (new)
 - Done when:
   - Users can import tokens, view balances, export tokens, and see reserved summaries.
+
+### P8-WALLET-2: Live Wallet State Reflection (Event-Driven Updates)
+- Goal: Keep Wallet and payment prompt UI state accurate while flows are active (no pull-only-on-appear refresh).
+- Owned files:
+  - `bitchat/Services/WalletNotifications.swift` (new)
+  - `bitchat/Services/CashuWalletService.swift`
+  - `bitchat/Services/ThirdwebGuestWalletBridge.swift`
+  - `bitchat/ViewModels/Extensions/ChatViewModel+AgentMeshPayments.swift`
+  - `bitchat/Views/Wallet/WalletView.swift`
+  - `bitchat/Views/Components/TextMessageView.swift`
+- Done when:
+  - Cashu wallet mutation emits `cashuWalletDidUpdate` only on real state changes.
+  - Thirdweb guest wallet mutation emits `thirdwebWalletDidUpdate` on successful state changes.
+  - Wallet balances/reserved update while the Wallet screen is open.
+  - Payment prompt cards enable/disable actions based on current rail readiness (mint allowlist / x402 bridge config).
 
 ### P8-MINT-1: Mint Allowlist + Consent UX (Requester-side)
 - Goal: Fail closed for unknown mints; require explicit user consent.

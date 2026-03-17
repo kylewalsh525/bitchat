@@ -112,9 +112,10 @@ enum CommandInfo: String, Identifiable {
     
     static func all(isGeoPublic: Bool, isGeoDM: Bool) -> [CommandInfo] {
         let baseCommands: [CommandInfo] = [
-            .agent, .agentconfig, .agentset, .agenton, .agentoff, .agentquality,
-            .agentruntime, .agentgateway, .agenttoken, .agenttimeout, .agentstream, .agentsession,
-            .agentchoose, .agentpay, .agentwallet, .agentfilter,
+            // Keep chat-focused commands in the slash menu.
+            // Setup/config commands moved to Settings remain executable when typed,
+            // but are intentionally hidden from suggestions to reduce menu noise.
+            .agent, .agentsession, .agentchoose, .agentpay,
             .block, .unblock, .clear, .hug, .message, .slap, .who
         ]
         if isGeoPublic || isGeoDM {

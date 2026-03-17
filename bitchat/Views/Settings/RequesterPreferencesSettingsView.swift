@@ -26,9 +26,28 @@ struct RequesterPreferencesSettingsView: View {
         )
     }
 
+    private var x402Readiness: X402ReadinessState {
+        X402ReadinessEvaluator.evaluate(
+            allowX402Payments: viewModel.agentRequesterPreferences.allowX402Payments,
+            bridgeAvailable: viewModel.thirdwebGuestWalletBridge.isBridgeAvailable,
+            walletAddress: viewModel.thirdwebGuestWalletBridge.walletAddress
+        )
+    }
+
+    private var surfaceBackground: Color {
+        #if os(iOS)
+        return Color(.systemBackground)
+        #else
+        return Color(.windowBackgroundColor)
+        #endif
+    }
+
     var body: some View {
         content
         .navigationTitle("Requester Preferences")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
         .onAppear {
             reloadKnownModels()
             overlayURLString = viewModel.knownModelUpdateService.storedSourceURL() ?? ""
@@ -51,23 +70,37 @@ struct RequesterPreferencesSettingsView: View {
         Form {
             Section("Routing") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Min quality: \(Int(minQualityBinding.wrappedValue))")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    SettingsIconRow(
+                        icon: "speedometer",
+                        title: "Minimum quality",
+                        subtitle: "\(Int(minQualityBinding.wrappedValue))/100"
+                    )
                     Slider(value: minQualityBinding, in: 0...100, step: 1)
                 }
 
-                Toggle("Prefer known open-source models", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { viewModel.agentRequesterPreferences.preferKnownModels },
                     set: { viewModel.agentRequesterPreferences.preferKnownModels = $0 }
-                ))
+                )) {
+                    SettingsIconRow(
+                        icon: "sparkles",
+                        title: "Prefer known open-source models",
+                        subtitle: "Boost providers that match your known model catalog."
+                    )
+                }
 
-                Toggle("Penalize unknown models", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { viewModel.agentRequesterPreferences.penalizeUnknownModels },
                     set: { viewModel.agentRequesterPreferences.penalizeUnknownModels = $0 }
-                ))
+                )) {
+                    SettingsIconRow(
+                        icon: "questionmark.circle",
+                        title: "Penalize unknown models",
+                        subtitle: "Slightly lower ranking for providers without a known match."
+                    )
+                }
 
-                Toggle("Enable x402 payments (online only)", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { viewModel.agentRequesterPreferences.allowX402Payments },
                     set: { enabled in
                         viewModel.agentRequesterPreferences.allowX402Payments = enabled
@@ -75,7 +108,13 @@ struct RequesterPreferencesSettingsView: View {
                             viewModel.agentRequesterPreferences.defaultPaymentRail = .cashu
                         }
                     }
-                ))
+                )) {
+                    SettingsIconRow(
+                        icon: "network",
+                        title: "Enable x402 payments",
+                        subtitle: "Online only and less private than Cashu."
+                    )
+                }
 
                 Picker("Preferred payment rail", selection: Binding(
                     get: {
@@ -85,7 +124,7 @@ struct RequesterPreferencesSettingsView: View {
                         }
                         return preferred
                     },
-                    set: { next in
+                    set: { (next: AgentPaymentRail) in
                         if next == .x402 && !viewModel.agentRequesterPreferences.allowX402Payments {
                             viewModel.agentRequesterPreferences.allowX402Payments = true
                         }
@@ -99,6 +138,8 @@ struct RequesterPreferencesSettingsView: View {
                 Text("Cashu works across BLE mesh and offers stronger privacy. x402 is online-only and uses on-chain/facilitator infrastructure.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                x402ReadinessPanel
             }
 
             Section("Quote Selection") {
@@ -191,6 +232,8 @@ struct RequesterPreferencesSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(surfaceBackground)
         #else
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
@@ -203,17 +246,29 @@ struct RequesterPreferencesSettingsView: View {
                             Slider(value: minQualityBinding, in: 0...100, step: 1)
                         }
 
-                        Toggle("Prefer known open-source models", isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { viewModel.agentRequesterPreferences.preferKnownModels },
                             set: { viewModel.agentRequesterPreferences.preferKnownModels = $0 }
-                        ))
+                        )) {
+                            SettingsIconRow(
+                                icon: "sparkles",
+                                title: "Prefer known open-source models",
+                                subtitle: "Boost providers that match your known model catalog."
+                            )
+                        }
 
-                        Toggle("Penalize unknown models", isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { viewModel.agentRequesterPreferences.penalizeUnknownModels },
                             set: { viewModel.agentRequesterPreferences.penalizeUnknownModels = $0 }
-                        ))
+                        )) {
+                            SettingsIconRow(
+                                icon: "questionmark.circle",
+                                title: "Penalize unknown models",
+                                subtitle: "Slightly lower ranking for providers without a known match."
+                            )
+                        }
 
-                        Toggle("Enable x402 payments (online only)", isOn: Binding(
+                        Toggle(isOn: Binding(
                             get: { viewModel.agentRequesterPreferences.allowX402Payments },
                             set: { enabled in
                                 viewModel.agentRequesterPreferences.allowX402Payments = enabled
@@ -221,7 +276,13 @@ struct RequesterPreferencesSettingsView: View {
                                     viewModel.agentRequesterPreferences.defaultPaymentRail = .cashu
                                 }
                             }
-                        ))
+                        )) {
+                            SettingsIconRow(
+                                icon: "network",
+                                title: "Enable x402 payments",
+                                subtitle: "Online only and less private than Cashu."
+                            )
+                        }
 
                         Picker("Preferred payment rail", selection: Binding(
                             get: {
@@ -231,7 +292,7 @@ struct RequesterPreferencesSettingsView: View {
                                 }
                                 return preferred
                             },
-                            set: { next in
+                            set: { (next: AgentPaymentRail) in
                                 if next == .x402 && !viewModel.agentRequesterPreferences.allowX402Payments {
                                     viewModel.agentRequesterPreferences.allowX402Payments = true
                                 }
@@ -246,6 +307,8 @@ struct RequesterPreferencesSettingsView: View {
                         Text("Cashu works across BLE mesh and offers stronger privacy. x402 is online-only and uses on-chain/facilitator infrastructure.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+
+                        x402ReadinessPanel
                     }
                 }
 
@@ -347,7 +410,28 @@ struct RequesterPreferencesSettingsView: View {
             }
             .padding()
         }
+        .background(surfaceBackground)
         #endif
+    }
+
+    @ViewBuilder
+    private var x402ReadinessPanel: some View {
+        let readiness = x402Readiness
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsIconRow(
+                icon: readiness.isReady ? "checkmark.circle.fill" : "exclamationmark.triangle",
+                title: "x402 readiness: \(readiness.title)",
+                subtitle: readiness.detail
+            )
+            Text("x402 requires internet and is less private than Cashu.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            NavigationLink("Open wallet setup") {
+                WalletView()
+            }
+            .font(.footnote.weight(.semibold))
+        }
+        .padding(.vertical, 8)
     }
 }
 

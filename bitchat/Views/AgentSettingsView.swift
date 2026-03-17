@@ -10,21 +10,28 @@ import Foundation
 
 struct AgentSettingsView: View {
     @EnvironmentObject var viewModel: ChatViewModel
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @State private var memoryQuickNote: String = ""
     @State private var showMemoryWipeConfirm = false
 
     private var backgroundColor: Color {
-        colorScheme == .dark ? Color.black : Color.white
+        #if os(iOS)
+        return Color(.systemBackground)
+        #else
+        return Color(.windowBackgroundColor)
+        #endif
     }
 
     private var textColor: Color {
-        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+        .primary
     }
 
     private var secondaryTextColor: Color {
-        colorScheme == .dark ? Color.green.opacity(0.8) : Color(red: 0, green: 0.5, blue: 0).opacity(0.8)
+        .secondary
+    }
+
+    private var accentColor: Color {
+        colorScheme == .dark ? .green : Color(red: 0, green: 0.5, blue: 0)
     }
 
     private var agentEnabled: Binding<Bool> {
@@ -33,8 +40,13 @@ struct AgentSettingsView: View {
         })
     }
 
-    private var roleBinding: Binding<String> {
-        Binding(get: { viewModel.agentConfig.role }, set: { value in updateConfig { $0.role = value } })
+    private var providerRoleBinding: Binding<AgentProviderRole> {
+        Binding(
+            get: { AgentProviderRole(normalizing: viewModel.agentConfig.role) },
+            set: { role in
+                updateConfig { $0.role = role.rawValue }
+            }
+        )
     }
 
     private var modelBinding: Binding<String> {
@@ -486,41 +498,19 @@ struct AgentSettingsView: View {
     }
 
     var body: some View {
-        #if os(macOS)
-        VStack(spacing: 0) {
-            HStack {
-                Text("Agent Setup")
-                    .font(.bitchatSystem(size: 16, weight: .bold, design: .monospaced))
-                    .foregroundColor(textColor)
-                Spacer()
-                Button("Done") { dismiss() }
-                    .buttonStyle(.plain)
-                    .foregroundColor(textColor)
-            }
-            .padding()
-            .background(backgroundColor.opacity(0.95))
-            ScrollView { content }
-                .background(backgroundColor)
+        ScrollView {
+            content
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .frame(maxWidth: 880, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
-        .frame(width: 620, height: 720)
-        #else
-        NavigationView {
-            ScrollView { content }
-                .background(backgroundColor)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button(action: { dismiss() }) {
-                            Image(systemName: "xmark")
-                                .font(.bitchatSystem(size: 13, weight: .semibold, design: .monospaced))
-                                .foregroundColor(textColor)
-                                .frame(width: 32, height: 32)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-        }
+        .background(backgroundColor.ignoresSafeArea())
+        .navigationTitle("Advanced Provider Setup")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
         #endif
+        .tint(accentColor)
     }
 
     @ViewBuilder
@@ -533,12 +523,16 @@ struct AgentSettingsView: View {
             GroupBox(label: Text("Agent Identity").font(.bitchatSystem(size: 12, design: .monospaced))) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("Role")
+                        Text("Model type")
                             .font(.bitchatSystem(size: 12, design: .monospaced))
                             .foregroundColor(secondaryTextColor)
-                        TextField("general", text: roleBinding)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.bitchatSystem(size: 12, design: .monospaced))
+                        Picker("Model type", selection: providerRoleBinding) {
+                            ForEach(AgentProviderRole.allCases, id: \.self) { role in
+                                Text(role.title).tag(role)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Quality \(Int(qualityBinding.wrappedValue))")

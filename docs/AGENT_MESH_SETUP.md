@@ -9,8 +9,9 @@ Beta readiness checklist:
 - Two devices recommended for end-to-end mesh tests.
 - Bluetooth enabled on both devices.
 - For payment tests, preload requester wallet with a valid Cashu token.
-- For x402 tests, configure a thirdweb client ID in Wallet settings and run the local gateway with x402 endpoints enabled.
+- For x402 tests, configure `THIRDWEB_CLIENT_ID` in `Configs/Local.xcconfig` (or Xcode build settings / scheme env var) and run the local gateway with x402 endpoints enabled. Note: `.env` does not configure the iOS/macOS app build.
 - For macOS payment locking tests, macOS 14.5+ is required (CashuDevKit artifacts).
+- Wallet import accepts `cashuA` and `cashuB` tokens and can extract tokens from pasted text (for example `1: cashuB...`).
 
 ## Build and Run (macOS)
 1. Open project:
@@ -109,6 +110,53 @@ Expected:
 - requester sees "payment request expired".
 - stale payment is not accepted.
 
+## Live Wallet State Reflection Checks
+Use these checks to verify event-driven wallet updates are live during payment flows.
+
+1. Open Wallet while starting from an empty balance.
+2. Import a valid Cashu token from the Import pane.
+   - Accepted formats: plain `cashuA...` / `cashuB...`, `cashu:<token>`, and prefixed lines (`1: cashuB...`).
+
+Expected:
+- balance updates immediately (no reopen).
+
+3. Send a paid request and tap `Pay now` while Wallet is open.
+
+Expected:
+- "Reserved (in-flight)" row updates immediately after reserve.
+- balance decreases immediately after reserve.
+
+4. Accept the receipt (`accepted_offline`) and then check Wallet.
+Expected:
+- reserved summary updates to remove the paid entry.
+
+5. Trigger a failure/retry flow (e.g. insufficient funds or timeout) that rolls back reserve.
+Expected:
+- reserved proof is restored to balance in Wallet immediately.
+
+6. Open Wallet -> x402 and tap `Connect guest wallet`.
+
+Expected:
+- Wallet setup section shows explicit readiness (`not configured`, `wallet not connected`, `ready`).
+- If `THIRDWEB_CLIENT_ID` is missing, x402 shows as unavailable in this build.
+- every thirdweb action shows progress and explicit success/failure copy.
+- prompt context includes chain/gateway/token summary once a successful payment path executes.
+
+## Settings Navigation + Responsiveness Checks
+Use these checks after UI updates to catch navigation regressions and layout cycles.
+
+1. Open `Settings` from the main gear button.
+2. Navigate: `Wallet setup` -> back -> `Requester preferences` -> back -> `Support` -> back -> `About BitChat` -> back.
+3. Open `Provider setup`, move between steps, then use system back to return to settings root.
+4. Tap `Done` from settings root.
+
+Expected:
+- settings root is the only full-screen dismiss owner (`Done`).
+- pushed destinations use standard system back.
+- no screen traps the user without `Back`, `Cancel`, or `Done`.
+- no sustained `AttributeGraph cycle detected` log spam while navigating.
+- wallet page remains responsive while notifications update balances/reserved rows.
+
 ## X402 Multi-Rail Checks (Phase 4G Baseline)
 ### 1) Start gateway with x402 endpoints
 - `python3 scripts/agent_gateway_proxy.py`
@@ -133,8 +181,7 @@ Optional upstream mode (instead of default mock):
 1. Open Settings -> Agents -> Requester preferences.
 2. Enable `x402 payments` and set preferred rail to `x402`.
 3. Open Wallet -> x402 Guest Wallet:
-   - set thirdweb client ID
-   - tap `Connect guest`
+   - tap `Connect guest wallet`
 
 ### 4) Execute paid request
 1. Requester: `/agent <role> <prompt>`.

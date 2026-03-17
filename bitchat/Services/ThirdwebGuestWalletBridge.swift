@@ -4,10 +4,17 @@ import Combine
 import WebKit
 #endif
 
+@MainActor
+protocol ThirdwebBridgeRuntimeCalling {
+    func call(method: String, args: [String: String], timeoutSeconds: TimeInterval) async throws -> String
+    func prewarm(timeoutSeconds: TimeInterval) async throws
+}
+
 enum ThirdwebGuestWalletError: LocalizedError {
     case unsupportedPlatform
     case missingClientID
     case pageLoadFailed
+    case runtimeNotReady
     case bridgeTimeout
     case malformedResponse
     case unavailable(String)
@@ -17,9 +24,15 @@ enum ThirdwebGuestWalletError: LocalizedError {
         case .unsupportedPlatform:
             return "thirdweb wallet bridge is not supported on this platform"
         case .missingClientID:
-            return "thirdweb client id is missing"
+            #if DEBUG
+            return "x402 isn't available in this build. Add THIRDWEB_CLIENT_ID in Configs/Local.xcconfig and rebuild."
+            #else
+            return "x402 isn't available in this build"
+            #endif
         case .pageLoadFailed:
             return "failed to initialize thirdweb web wallet runtime"
+        case .runtimeNotReady:
+            return "thirdweb runtime is still loading, try again"
         case .bridgeTimeout:
             return "thirdweb wallet bridge timed out"
         case .malformedResponse:
@@ -35,22 +48,80 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
     static let clientIDKey = "bitchat.thirdweb.client.id"
     static let walletAddressKey = "bitchat.thirdweb.wallet.address"
     static let linkedKey = "bitchat.thirdweb.wallet.linked"
+    static let bundleClientIDInfoKey = "ThirdwebClientID"
 
     private let defaults: UserDefaults
+    private let runtime: ThirdwebBridgeRuntimeCalling
 
     @Published private(set) var walletAddress: String?
     @Published private(set) var isLinked: Bool
 
-    init(defaults: UserDefaults = .standard) {
+    var isBridgeAvailable: Bool {
+#if canImport(WebKit)
+        return true
+#else
+        return false
+#endif
+    }
+
+    private func emitWalletUpdate(reason: String, requestID: String? = nil) {
+        var payload: [String: String] = [
+            WalletNotificationKeys.source: "ThirdwebGuestWalletBridge",
+            WalletNotificationKeys.rail: AgentPaymentRail.x402.rawValue,
+            WalletNotificationKeys.reason: reason
+        ]
+        if let requestID {
+            payload[WalletNotificationKeys.requestID] = requestID
+        }
+        NotificationCenter.default.post(
+            name: .thirdwebWalletDidUpdate,
+            object: self,
+            userInfo: payload
+        )
+    }
+
+    init(defaults: UserDefaults = .standard, runtime: ThirdwebBridgeRuntimeCalling? = nil) {
         self.defaults = defaults
         self.walletAddress = defaults.string(forKey: Self.walletAddressKey)
         self.isLinked = defaults.bool(forKey: Self.linkedKey)
+        #if canImport(WebKit)
+        self.runtime = runtime ?? ThirdwebBridgeRuntime.shared
+        #else
+        self.runtime = runtime ?? UnsupportedThirdwebBridgeRuntime()
+        #endif
         super.init()
     }
 
+    private func bundleClientID() -> String? {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: Self.bundleClientIDInfoKey) as? String else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        // If the build setting wasn't substituted, Xcode may leave a placeholder like `$(THIRDWEB_CLIENT_ID)`.
+        guard !trimmed.contains("$(") else { return nil }
+        return trimmed
+    }
+
+    private func environmentClientID() -> String? {
+        let value = ProcessInfo.processInfo.environment["THIRDWEB_CLIENT_ID"] ?? ""
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
     func configuredClientID() -> String? {
-        let value = defaults.string(forKey: Self.clientIDKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (value?.isEmpty == false) ? value : nil
+        // Developer override (stored on-device). Users should not need to set this in normal builds.
+        if let override = defaults.string(forKey: Self.clientIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return override
+        }
+        // Dev convenience (Xcode scheme env var / local launch): allow runtime env override.
+        if let env = environmentClientID() {
+            return env
+        }
+        return bundleClientID()
     }
 
     func setConfiguredClientID(_ clientID: String?) {
@@ -60,6 +131,12 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
         } else {
             defaults.set(trimmed, forKey: Self.clientIDKey)
         }
+        emitWalletUpdate(reason: "client-id-updated")
+    }
+
+    func prewarm(timeoutSeconds: TimeInterval = 20) async {
+        guard isBridgeAvailable else { return }
+        _ = try? await runtime.prewarm(timeoutSeconds: timeoutSeconds)
     }
 
     func ensureGuestWallet() async throws -> String {
@@ -70,6 +147,7 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
         )
         walletAddress = address
         defaults.set(address, forKey: Self.walletAddressKey)
+        emitWalletUpdate(reason: "ensureGuestWallet-success")
         return address
     }
 
@@ -106,6 +184,7 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
 
         walletAddress = payload.payerAddress
         defaults.set(payload.payerAddress, forKey: Self.walletAddressKey)
+        emitWalletUpdate(reason: "payX402-success", requestID: paymentID)
         return X402WalletPaymentResult(paymentData: payload.paymentData, payerAddress: payload.payerAddress)
     }
 
@@ -118,6 +197,7 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
         )
         isLinked = true
         defaults.set(true, forKey: Self.linkedKey)
+        emitWalletUpdate(reason: "linkWallet-success")
     }
 
     func exportPrivateKey() async throws -> String {
@@ -132,6 +212,7 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
         isLinked = false
         defaults.removeObject(forKey: Self.walletAddressKey)
         defaults.removeObject(forKey: Self.linkedKey)
+        emitWalletUpdate(reason: "resetWallet-success")
     }
 
     private func requireClientID() throws -> String {
@@ -149,16 +230,17 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
 
 #if canImport(WebKit)
 @MainActor
-private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKNavigationDelegate, ThirdwebBridgeRuntimeCalling {
     static let shared = ThirdwebBridgeRuntime()
 
     private var webView: WKWebView?
     private var loaded = false
+    private var runtimeReady = false
     private var loadWaiters: [CheckedContinuation<Void, Error>] = []
     private var continuations: [String: CheckedContinuation<String, Error>] = [:]
 
     func call(method: String, args: [String: String], timeoutSeconds: TimeInterval) async throws -> String {
-        try await ensureLoaded()
+        try await ensureLoaded(timeoutSeconds: 20)
         guard let webView else { throw ThirdwebGuestWalletError.pageLoadFailed }
 
         let id = UUID().uuidString.lowercased()
@@ -176,7 +258,7 @@ private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKN
             webView.evaluateJavaScript(script) { [weak self] _, error in
                 guard let self else { return }
                 if let error {
-                    self.resolve(id: id, result: .failure(error))
+                    self.resolve(id: id, result: .failure(self.mapBridgeError(error)))
                 }
             }
 
@@ -190,8 +272,16 @@ private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKN
         }
     }
 
-    private func ensureLoaded() async throws {
-        if loaded { return }
+    func prewarm(timeoutSeconds: TimeInterval) async throws {
+        try await ensureLoaded(timeoutSeconds: timeoutSeconds)
+    }
+
+    private func ensureLoaded(timeoutSeconds: TimeInterval) async throws {
+        if loaded && runtimeReady { return }
+        if loaded && !runtimeReady {
+            try await waitForRuntimeReady(timeoutSeconds: timeoutSeconds)
+            return
+        }
         if webView == nil {
             let config = WKWebViewConfiguration()
             let controller = WKUserContentController()
@@ -206,6 +296,7 @@ private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKN
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             loadWaiters.append(continuation)
         }
+        try await waitForRuntimeReady(timeoutSeconds: timeoutSeconds)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -241,7 +332,31 @@ private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKN
         failLoad(error: error)
     }
 
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // WebKit can kill the web content process under memory pressure or crashes.
+        // Clear state so the next action recreates the runtime cleanly.
+        loaded = false
+        runtimeReady = false
+        self.webView = nil
+
+        let terminationError = ThirdwebGuestWalletError.unavailable("thirdweb restarted. Try again.")
+
+        let waiters = loadWaiters
+        loadWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume(throwing: terminationError)
+        }
+
+        let pending = continuations
+        continuations.removeAll(keepingCapacity: false)
+        for (_, continuation) in pending {
+            continuation.resume(throwing: terminationError)
+        }
+    }
+
     private func failLoad(error: Error) {
+        loaded = false
+        runtimeReady = false
         let waiters = loadWaiters
         loadWaiters.removeAll(keepingCapacity: false)
         for waiter in waiters {
@@ -259,12 +374,101 @@ private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKN
         }
     }
 
+    private func mapBridgeError(_ error: Error) -> Error {
+        let nsError = error as NSError
+        let description = nsError.localizedDescription.lowercased()
+        if nsError.domain == NSURLErrorDomain {
+            switch nsError.code {
+            case NSURLErrorNotConnectedToInternet:
+                return ThirdwebGuestWalletError.unavailable("No internet connection. x402 needs internet to provision and pay.")
+            case NSURLErrorTimedOut:
+                return ThirdwebGuestWalletError.unavailable("Network timed out. Try again on a stronger connection.")
+            case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorCannotLoadFromNetwork, NSURLErrorDNSLookupFailed:
+                return ThirdwebGuestWalletError.unavailable("thirdweb bridge network failed. Check internet access and firewall/VPN.")
+            default:
+                break
+            }
+        }
+        if description.contains("javascript") && description.contains("undefined") {
+            return ThirdwebGuestWalletError.runtimeNotReady
+        }
+        if description.contains("module script") ||
+            description.contains("importing a module script failed") ||
+            description.contains("failed to fetch dynamically imported module") {
+            return ThirdwebGuestWalletError.unavailable("thirdweb couldn't load its web libraries. Check third-party CDN access.")
+        }
+        if description.contains("script") && description.contains("exception") {
+            return ThirdwebGuestWalletError.unavailable("thirdweb runtime reported a script error. Check internet, then retry.")
+        }
+        return error
+    }
+
     private static func escapeJSString(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "")
+    }
+
+    private struct RuntimeProbe: Decodable {
+        let ready: Bool
+        let initError: String
+    }
+
+    private func waitForRuntimeReady(timeoutSeconds: TimeInterval) async throws {
+        guard let webView else { throw ThirdwebGuestWalletError.pageLoadFailed }
+        if runtimeReady { return }
+
+        let deadline = Date().addingTimeInterval(max(1, timeoutSeconds))
+        while Date() < deadline {
+            let json = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                webView.evaluateJavaScript(
+                    "JSON.stringify({ready: window.bitchatThirdwebReady === true, initError: window.bitchatThirdwebInitError || ''})"
+                ) { value, error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                        return
+                    }
+                    continuation.resume(returning: value as? String ?? "")
+                }
+            }
+
+            if let data = json.data(using: .utf8),
+               let probe = try? JSONDecoder().decode(RuntimeProbe.self, from: data) {
+                if probe.ready {
+                    runtimeReady = true
+                    return
+                }
+                let initError = probe.initError.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !initError.isEmpty {
+                    throw ThirdwebGuestWalletError.unavailable(Self.friendlyInitError(initError))
+                }
+            }
+
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+        throw ThirdwebGuestWalletError.runtimeNotReady
+    }
+
+    private static func friendlyInitError(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "thirdweb failed to start." }
+        let lowered = trimmed.lowercased()
+        if lowered.contains("importing a module script failed") ||
+            lowered.contains("failed to fetch dynamically imported module") ||
+            lowered.contains("failed to parse") ||
+            lowered.contains("failed to load thirdweb modules") ||
+            lowered.contains("module script") ||
+            lowered.contains("failed to fetch") ||
+            lowered.contains("module script failed") ||
+            lowered.contains("module specifier") ||
+            lowered.contains("load failed") ||
+            lowered.contains("not connected") ||
+            lowered.contains("network") {
+            return "thirdweb couldn't load its web libraries. Check your internet + CDN access (esm.sh / jsdelivr / unpkg), then try again."
+        }
+        return "thirdweb failed to start: \(trimmed)"
     }
 
     private static let bridgeHTML = """
@@ -277,113 +481,192 @@ private final class ThirdwebBridgeRuntime: NSObject, WKScriptMessageHandler, WKN
 </head>
 <body>
 <script type="module">
-import { createThirdwebClient } from "https://esm.sh/thirdweb@5";
-import { inAppWallet, linkProfile } from "https://esm.sh/thirdweb@5/wallets";
-import { wrapFetchWithPayment } from "https://esm.sh/thirdweb@5/x402";
+window.bitchatThirdwebReady = false;
+window.bitchatThirdwebInitError = "";
 
 const state = {
   clientID: null,
   client: null,
   wallet: null,
   account: null,
+  x402: null,
 };
 
 function send(id, ok, value, error) {
   window.webkit?.messageHandlers?.thirdwebBridge?.postMessage({ id, ok, value, error });
 }
 
-async function ensureWallet(clientID) {
-  if (!clientID || typeof clientID !== "string") {
-    throw new Error("missing thirdweb client id");
-  }
-  if (state.clientID !== clientID || !state.client || !state.wallet) {
-    state.clientID = clientID;
-    state.client = createThirdwebClient({ clientId: clientID });
-    state.wallet = inAppWallet({
-      auth: { options: ["guest", "passkey", "email", "google", "apple"] },
-    });
-    state.account = null;
-  }
-  if (!state.account) {
-    state.account = await state.wallet.connect({
-      client: state.client,
-      strategy: "guest",
-    });
-  }
-  return state.account.address;
-}
-
-window.bitchatThirdwebRPC = async (method, id, args) => {
+(async () => {
   try {
-    if (method === "ensureGuestWallet") {
-      const address = await ensureWallet(args.clientID);
-      send(id, true, address, null);
-      return;
-    }
-
-    if (method === "payX402") {
-      const address = await ensureWallet(args.clientID);
-      const fetchWithPayment = wrapFetchWithPayment(
-        fetch,
-        state.client,
-        state.wallet,
-        BigInt(args.amount || "0"),
-      );
-      const target = String(args.gatewayURL || "").replace(/\\/+$/, "") + "/x402/prepare";
-      const response = await fetchWithPayment(target, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paymentID: args.paymentID,
-          requestID: args.requestID,
-          amount: args.amount,
-          chainID: args.chainID,
-          tokenAddress: args.tokenAddress,
-          payTo: args.payTo,
-        }),
+    const importTimeoutMs = 12000;
+    const cacheBust = Date.now().toString(36);
+    function withTimeout(promise, timeoutMs, label) {
+      let timeoutID = null;
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutID = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
       });
-
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error("x402 prepare failed: " + response.status + " " + body);
-      }
-      const payload = await response.json();
-      if (!payload || !payload.paymentData) {
-        throw new Error("x402 prepare response missing paymentData");
-      }
-
-      send(id, true, JSON.stringify({
-        paymentData: payload.paymentData,
-        payerAddress: payload.payerAddress || address
-      }), null);
-      return;
+      return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timeoutID !== null) {
+          clearTimeout(timeoutID);
+        }
+      });
     }
 
-    if (method === "linkPasskey") {
-      await ensureWallet(args.clientID);
-      await linkProfile(state.wallet, { strategy: "passkey" });
-      send(id, true, "linked", null);
-      return;
+    function withCacheBust(url) {
+      return url.includes("?")
+        ? (url + "&bitchatcb=" + cacheBust)
+        : (url + "?bitchatcb=" + cacheBust);
     }
 
-    if (method === "resetWallet") {
-      if (state.wallet) {
-        try { await state.wallet.disconnect(); } catch {}
+    async function importWithFallback(urls) {
+      let lastError = null;
+      const errors = [];
+      for (const url of urls) {
+        const attempts = [url, withCacheBust(url)];
+        for (const attempt of attempts) {
+          try {
+            return await withTimeout(import(attempt), importTimeoutMs, `import ${attempt}`);
+          } catch (err) {
+            lastError = err;
+            const message = err?.message || String(err);
+            errors.push(attempt + ": " + message);
+          }
+        }
       }
-      state.clientID = null;
-      state.client = null;
-      state.wallet = null;
-      state.account = null;
-      send(id, true, "ok", null);
-      return;
+      const detail = errors.length ? errors.join(" | ") : (lastError?.message || String(lastError));
+      throw new Error("failed to load thirdweb modules: " + detail);
     }
 
-    send(id, false, null, "unknown method");
+    const thirdweb = await importWithFallback([
+      "https://unpkg.com/thirdweb@5/dist/esm/exports/thirdweb.js",
+      "https://cdn.jsdelivr.net/npm/thirdweb@5/+esm",
+      "https://esm.sh/thirdweb@5?target=es2020",
+      "https://esm.sh/thirdweb@5?target=es2020&bundle",
+    ]);
+    const wallets = await importWithFallback([
+      "https://unpkg.com/thirdweb@5/dist/esm/exports/wallets/in-app.js",
+      "https://cdn.jsdelivr.net/npm/thirdweb@5/wallets/+esm",
+      "https://esm.sh/thirdweb@5/wallets?target=es2020",
+      "https://esm.sh/thirdweb@5/wallets?target=es2020&bundle",
+    ]);
+
+    const { createThirdwebClient } = thirdweb;
+    const { inAppWallet } = wallets;
+
+    async function ensureX402() {
+      if (!state.x402) {
+        state.x402 = await importWithFallback([
+          "https://unpkg.com/thirdweb@5/dist/esm/exports/x402.js",
+          "https://cdn.jsdelivr.net/npm/thirdweb@5/x402/+esm",
+          "https://esm.sh/thirdweb@5/x402?target=es2020",
+          "https://esm.sh/thirdweb@5/x402?target=es2020&bundle",
+        ]);
+      }
+      return state.x402;
+    }
+
+    async function ensureWallet(clientID) {
+      if (!clientID || typeof clientID !== "string") {
+        throw new Error("missing thirdweb client id");
+      }
+      if (state.clientID !== clientID || !state.client || !state.wallet) {
+        state.clientID = clientID;
+        state.client = createThirdwebClient({ clientId: clientID });
+        state.wallet = inAppWallet({
+          auth: { options: ["guest"] },
+        });
+        state.account = null;
+      }
+      if (!state.account) {
+        state.account = await state.wallet.connect({
+          client: state.client,
+          strategy: "guest",
+        });
+      }
+      return state.account.address;
+    }
+
+    window.bitchatThirdwebRPC = async (method, id, args) => {
+      try {
+        if (method === "ensureGuestWallet") {
+          const address = await ensureWallet(args.clientID);
+          send(id, true, address, null);
+          return;
+        }
+
+        if (method === "payX402") {
+          const address = await ensureWallet(args.clientID);
+          const x402 = await ensureX402();
+          const { wrapFetchWithPayment } = x402;
+          const fetchWithPayment = wrapFetchWithPayment(
+            fetch,
+            state.client,
+            state.wallet,
+            BigInt(args.amount || "0"),
+          );
+          const target = String(args.gatewayURL || "").replace(/\\/+$/, "") + "/x402/prepare";
+          const response = await fetchWithPayment(target, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              paymentID: args.paymentID,
+              requestID: args.requestID,
+              amount: args.amount,
+              chainID: args.chainID,
+              tokenAddress: args.tokenAddress,
+              payTo: args.payTo,
+            }),
+          });
+
+          if (!response.ok) {
+            const body = await response.text();
+            throw new Error("x402 prepare failed: " + response.status + " " + body);
+          }
+          const payload = await response.json();
+          if (!payload || !payload.paymentData) {
+            throw new Error("x402 prepare response missing paymentData");
+          }
+
+          send(id, true, JSON.stringify({
+            paymentData: payload.paymentData,
+            payerAddress: payload.payerAddress || address
+          }), null);
+          return;
+        }
+
+        if (method === "linkPasskey") {
+          send(id, false, null, "linking is unavailable in the embedded wallet runtime");
+          return;
+        }
+
+        if (method === "resetWallet") {
+          if (state.wallet) {
+            try { await state.wallet.disconnect(); } catch {}
+          }
+          state.clientID = null;
+          state.client = null;
+          state.wallet = null;
+          state.account = null;
+          send(id, true, "ok", null);
+          return;
+        }
+
+        send(id, false, null, "unknown method");
+      } catch (error) {
+        const message = error?.message || String(error);
+        send(id, false, null, message);
+      }
+    };
+
+    window.bitchatThirdwebReady = true;
   } catch (error) {
     const message = error?.message || String(error);
-    send(id, false, null, message);
+    window.bitchatThirdwebInitError = message;
+    window.bitchatThirdwebReady = false;
   }
-};
+})();
 </script>
 </body>
 </html>
@@ -391,13 +674,22 @@ window.bitchatThirdwebRPC = async (method, id, args) => {
 }
 #endif
 
+#if !canImport(WebKit)
+@MainActor
+private final class UnsupportedThirdwebBridgeRuntime: ThirdwebBridgeRuntimeCalling {
+    func call(method: String, args: [String : String], timeoutSeconds: TimeInterval) async throws -> String {
+        throw ThirdwebGuestWalletError.unsupportedPlatform
+    }
+
+    func prewarm(timeoutSeconds: TimeInterval) async throws {
+        throw ThirdwebGuestWalletError.unsupportedPlatform
+    }
+}
+#endif
+
 @MainActor
 extension ThirdwebGuestWalletBridge {
     fileprivate func callBridge(method: String, args: [String: String], timeoutSeconds: TimeInterval = 20) async throws -> String {
-        #if canImport(WebKit)
-        return try await ThirdwebBridgeRuntime.shared.call(method: method, args: args, timeoutSeconds: timeoutSeconds)
-        #else
-        throw ThirdwebGuestWalletError.unsupportedPlatform
-        #endif
+        try await runtime.call(method: method, args: args, timeoutSeconds: timeoutSeconds)
     }
 }

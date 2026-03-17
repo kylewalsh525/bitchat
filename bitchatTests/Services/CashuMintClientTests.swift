@@ -21,11 +21,21 @@ private final class ProxyRequestRecorder: @unchecked Sendable {
 private final class CashuMintClientURLProtocolStub: URLProtocol {
     private static let lock = NSLock()
     private static var responseError: Error?
+    private static var responseProvider: ((URLRequest) -> (status: Int, body: Data?))?
     private static var requestCounter: Int = 0
+    private static var requestedPaths: [String] = []
 
     static func configure(error: Error?) {
         lock.lock()
         responseError = error
+        responseProvider = nil
+        lock.unlock()
+    }
+
+    static func configure(responseProvider: @escaping (URLRequest) -> (status: Int, body: Data?)) {
+        lock.lock()
+        responseError = nil
+        Self.responseProvider = responseProvider
         lock.unlock()
     }
 
@@ -35,10 +45,18 @@ private final class CashuMintClientURLProtocolStub: URLProtocol {
         return requestCounter
     }
 
+    static func allRequestedPaths() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestedPaths
+    }
+
     static func reset() {
         lock.lock()
         responseError = nil
+        responseProvider = nil
         requestCounter = 0
+        requestedPaths = []
         lock.unlock()
     }
 
@@ -54,10 +72,30 @@ private final class CashuMintClientURLProtocolStub: URLProtocol {
         Self.lock.lock()
         Self.requestCounter += 1
         let error = Self.responseError
+        let provider = Self.responseProvider
+        if let path = request.url?.path {
+            Self.requestedPaths.append(path)
+        }
         Self.lock.unlock()
 
         if let error {
             client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
+
+        if let provider {
+            let response = provider(request)
+            let http = HTTPURLResponse(
+                url: request.url ?? URL(string: "https://example.com")!,
+                statusCode: response.status,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+            if let body = response.body {
+                client?.urlProtocol(self, didLoad: body)
+            }
+            client?.urlProtocolDidFinishLoading(self)
             return
         }
 
@@ -203,6 +241,39 @@ final class CashuMintClientTests: XCTestCase {
         let ids = recorder.allIDs()
         XCTAssertEqual(ids.count, 2)
         XCTAssertNotEqual(ids[0], ids[1])
+    }
+
+    func testSwapStopsLegacyRetryAfterNUT08SchemaError() async {
+        CashuMintClientURLProtocolStub.configure { request in
+            let body = """
+            {"detail":[{"loc":["body","inputs"],"msg":"field required","type":"value_error.missing"},{"loc":["body","outputs"],"msg":"field required","type":"value_error.missing"}]}
+            """.data(using: .utf8)
+            return (status: 422, body: body)
+        }
+        let client = CashuMintClient(session: makeSession())
+        let payload = CashuPaymentPayloadEnvelope(
+            paymentID: "pay-fallback",
+            requestID: "req-fallback",
+            mintURL: "https://mint.example",
+            unit: "sat",
+            totalAmount: 10,
+            // Missing keyset/signature fields forces direct CDK-first path to skip and
+            // exercises legacy request fallback handling.
+            proofs: [CashuProof(amount: 10, secret: "secret-fallback")],
+            nullifiers: ["n-fallback"],
+            clientNonce: "nonce-fallback",
+            createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000)
+        )
+
+        do {
+            try await client.swap(mintURL: payload.mintURL, payload: payload)
+            XCTFail("Expected swap to throw with malformed proof set")
+        } catch {
+            // Expected.
+        }
+
+        XCTAssertEqual(CashuMintClientURLProtocolStub.requestCount(), 1)
+        XCTAssertEqual(CashuMintClientURLProtocolStub.allRequestedPaths(), ["/v1/swap"])
     }
 
     private func makeSession() -> URLSession {

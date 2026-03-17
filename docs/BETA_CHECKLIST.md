@@ -26,17 +26,25 @@ This checklist is the minimum bar for shipping a TestFlight / limited beta for A
 ## Settings Discoverability / IA
 1. Gear icon is visible on the main screen header.
 2. People/session list button in the header is reachable with VoiceOver and opens the sheet.
-2. Settings contains:
+3. Settings contains:
    - Requester preferences
    - Wallet
    - Provider setup wizard
    - Panic wipe (visible, confirmed)
    - Support export
    - About
+4. Navigation contract:
+   - Root Settings owns dismissal (`Done`).
+   - Destination pages use system back.
+   - No destination traps the user (always `Back`/`Cancel`/`Done` path).
+5. Performance:
+   - Opening Settings and Wallet does not cause sustained UI freeze.
+   - Console does not spam repeated `AttributeGraph cycle detected` during normal navigation.
 
 ## Wallet + Mint Allowlist (Fail-Closed)
 1. Import token:
-   - Pasting a Cashu token and importing works.
+   - Pasting `cashuA` and `cashuB` tokens imports successfully.
+   - Pasting prefixed token lines (`1: cashuB...`) imports successfully.
    - If token references an unknown mint, the user is prompted to approve it first.
 2. Allowlist:
    - Approved mints list is editable (revoke works).
@@ -46,14 +54,21 @@ This checklist is the minimum bar for shipping a TestFlight / limited beta for A
    - Export works and “Copy/Share” works.
 5. Payment safety:
    - Paying a request that references a non-allowlisted mint fails closed (UI offers “Approve mint”).
+6. Live updates:
+   - Wallet balances and reserved summaries update immediately while Wallet setup screen is open.
+   - Burst wallet notifications do not visibly stutter the page (reloads are coalesced).
 
 ## X402 Rail (Optional, Online-Only)
 1. Requester preferences:
    - User can enable/disable x402 and choose default rail (`cashu` or `x402`).
    - x402 disabled prevents x402-first routing preference.
+   - x402 readiness panel updates live (`disabled`, `not configured`, `ready`) and deep-links to Wallet setup.
 2. Guest wallet:
-   - Wallet screen allows setting thirdweb client ID.
-   - “Connect guest” provisions/loads wallet address.
+   - Wallet screen shows a guided x402 setup (no client-id field).
+   - “Connect guest wallet” provisions/loads wallet address.
+   - If the app build is missing `THIRDWEB_CLIENT_ID`, x402 shows as unavailable and connect is disabled.
+   - Every thirdweb action shows explicit progress + success/failure status.
+   - Wallet status panel updates in real-time (`readiness`, `wallet`, `linked`).
 3. Provider wizard:
    - x402 rail fields (chain, token, pay-to, gateway URL) validate and persist.
 4. Payment interstitial:

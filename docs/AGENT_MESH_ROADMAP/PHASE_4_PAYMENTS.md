@@ -85,8 +85,12 @@ This Phase 4 plan is written as a PRD + technical design “single doc” that y
     - gateway proxy now serves `/x402/prepare` and `/x402/settle` (mock mode default; upstream passthrough configurable)
   - Remaining scope:
     - deployment-specific facilitator contracts/keys and upstream settlement policy hardening
+    - work packages (recommended order, no trust/reputation):
+      - `P4G-OPS-1` Hosted gateway deployment + ops hardening (TLS, rate limits, metrics, safe defaults)
+      - `P4G-FACIL-1` Thirdweb upstream contract hardening (auth, idempotency, error mapping, chain/token allowlists)
+      - `P4G-EXT-1` Payment rail adapter interface (make it easy to add EVM/Solana rails later while keeping offline behavior explicit)
     - optional additional rails (for example Solana) and any incentive layer are still deferred
-- **Next target:** Phase 4G production hardening (facilitator upstream contracts + operational policy) or optional incentives, depending on launch goals.
+- **Next target:** `P4G-OPS-1` then `P4G-FACIL-1`; add `P4G-EXT-1` only if we’re committing to multiple on-chain rails beyond x402 in the near term.
 
 ---
 

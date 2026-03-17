@@ -413,6 +413,165 @@ final class AgentPaymentBridgeTests: XCTestCase {
         XCTAssertEqual(second.details, "payment does not match request terms")
     }
 
+    func testRejectedPaymentDoesNotPoisonNextRequestWithReplay() async {
+        let store = AgentPaymentStore(storeURL: storeURL)
+        let nowMs = currentMs()
+        let offlineMint = "http://127.0.0.1:9"
+        store.recordPaymentRequest(makeRecord(
+            requestID: "req-r1",
+            sessionID: "sess-r1",
+            paymentID: "pay-r1",
+            state: .paymentRequested,
+            details: nil,
+            createdAtMs: nowMs,
+            expiresAtMs: nowMs + 60_000,
+            mintURL: offlineMint,
+            settlementMode: .offlineAccepted
+        ))
+        store.recordPaymentRequest(makeRecord(
+            requestID: "req-r2",
+            sessionID: "sess-r2",
+            paymentID: "pay-r2",
+            state: .paymentRequested,
+            details: nil,
+            createdAtMs: nowMs,
+            expiresAtMs: nowMs + 60_000,
+            mintURL: offlineMint,
+            settlementMode: .offlineAccepted
+        ))
+
+        let bridge = makeBridge(store: store)
+        let firstPacket = AgentPaymentPayloadPacket(
+            requestID: "req-r1",
+            sessionID: "sess-r1",
+            rail: "cashu",
+            payload: makePayloadJSON(
+                requestID: "req-r1",
+                paymentID: "pay-r1",
+                nullifiers: ["n-replay"],
+                mintURL: "https://mint.other"
+            ),
+            sentAt: nowMs,
+            clientNonce: "nonce-r1"
+        )
+        let first = await bridge.evaluateIncomingPayment(
+            packet: firstPacket,
+            from: PeerID(str: "peer-A"),
+            terms: AgentPaymentTerms(
+                paymentRail: .cashu,
+                settlementMode: .offlineAccepted,
+                unit: "sat",
+                pricePerRequest: 42,
+                acceptedMints: [offlineMint],
+                requestTTLSeconds: 120
+            )
+        )
+        XCTAssertEqual(first.status, .rejected)
+        XCTAssertEqual(first.details, "payment does not match request terms")
+
+        let secondPacket = AgentPaymentPayloadPacket(
+            requestID: "req-r2",
+            sessionID: "sess-r2",
+            rail: "cashu",
+            payload: makePayloadJSON(
+                requestID: "req-r2",
+                paymentID: "pay-r2",
+                nullifiers: ["n-replay"],
+                mintURL: offlineMint
+            ),
+            sentAt: nowMs,
+            clientNonce: "nonce-r2"
+        )
+        let second = await bridge.evaluateIncomingPayment(
+            packet: secondPacket,
+            from: PeerID(str: "peer-A"),
+            terms: AgentPaymentTerms(
+                paymentRail: .cashu,
+                settlementMode: .offlineAccepted,
+                unit: "sat",
+                pricePerRequest: 42,
+                acceptedMints: [offlineMint],
+                requestTTLSeconds: 120
+            )
+        )
+        XCTAssertEqual(second.status, .acceptedOffline)
+    }
+
+    func testApplyReceiptAlreadySpentCommitsReservedProofs() throws {
+        let store = AgentPaymentStore(storeURL: storeURL)
+        let keychain = MockKeychain()
+        let defaults = UserDefaults(suiteName: "AgentPaymentBridgeTests.allowlist.\(UUID().uuidString)")!
+        let allowlist = CashuMintAllowlistStore(defaults: defaults)
+        allowlist.setAllowed(["https://mint.example"])
+        let wallet = CashuWalletService(keychain: keychain, allowlist: allowlist)
+        let mintClient = CashuMintClient()
+        let lockKeyStore = AgentPaymentLockKeyStore(keychain: keychain)
+        let bridge = AgentPaymentBridge(
+            wallet: wallet,
+            mintClient: mintClient,
+            store: store,
+            lockKeyStore: lockKeyStore,
+            p2pkService: MockCashuP2PKService()
+        )
+
+        let token = CashuTokenParser.exportTokenString(
+            mintURL: "https://mint.example",
+            unit: "sat",
+            proofs: [CashuProof(amount: 42, secret: "secret-spent")]
+        )
+        XCTAssertNotNil(token)
+        _ = try wallet.importToken(token!)
+
+        let nowMs = currentMs()
+        let requestEnvelope = CashuPaymentRequestEnvelope(
+            version: 1,
+            paymentID: "pay-spent",
+            requestID: "req-spent",
+            mintURL: "https://mint.example",
+            unit: "sat",
+            amount: 42,
+            expiresAtMs: nowMs + 120_000,
+            settlementMode: .onlineRequired,
+            sessionID: "sess-spent",
+            pricingModel: nil,
+            trancheIndex: nil,
+            trancheCount: nil,
+            trancheTokenCount: nil,
+            outputTokenPrice: nil,
+            inputTokenPrice: nil,
+            minimumDeposit: nil
+        )
+        _ = try wallet.preparePaymentPayload(request: requestEnvelope, clientNonce: "nonce-spent")
+        XCTAssertEqual(wallet.balance(mintURL: "https://mint.example", unit: "sat"), 0)
+        XCTAssertEqual(wallet.reservedSummary().count, 1)
+
+        store.recordPaymentRequest(makeRecord(
+            requestID: "req-spent",
+            sessionID: "sess-spent",
+            paymentID: "pay-spent",
+            state: .payloadSent,
+            details: nil,
+            createdAtMs: nowMs,
+            expiresAtMs: nowMs + 120_000
+        ))
+
+        bridge.applyReceipt(
+            AgentPaymentReceiptPacket(
+                requestID: "req-spent",
+                sessionID: "sess-spent",
+                paymentID: "pay-spent",
+                status: .rejected,
+                details: "Token already spent.",
+                nullifiers: [],
+                notaryReceipts: []
+            )
+        )
+
+        XCTAssertEqual(wallet.balance(mintURL: "https://mint.example", unit: "sat"), 0)
+        XCTAssertTrue(wallet.reservedSummary().isEmpty)
+        XCTAssertEqual(store.record(for: "req-spent")?.state, .rejected)
+    }
+
     func testOfflineAcceptedPaymentCachesPayloadForLaterFinalization() async {
         let store = AgentPaymentStore(storeURL: storeURL)
         let nowMs = currentMs()

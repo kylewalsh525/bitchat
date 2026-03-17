@@ -30,19 +30,34 @@ final class GatewayAgentRuntime: StreamingAgentRuntime {
             let response = try await client.run(request: request, localInfo: localInfo, config: config, session: session, attachments: attachments)
             onHealthUpdate?(.success(Date()))
             let responseID = response.requestID.isEmpty ? request.requestID : response.requestID
+            let decodedAttachments: [AgentRuntimeAttachment] = response.attachments?.compactMap { item in
+                guard let data = Data(base64Encoded: item.dataBase64) else { return nil }
+                let fileName = item.fileName ?? "attachment"
+                return AgentRuntimeAttachment(data: data, fileName: fileName, mimeType: item.mimeType)
+            } ?? []
+            var hasImage = false
+            let attachments = decodedAttachments.compactMap { attachment -> AgentRuntimeAttachment? in
+                let isImage = attachment.mimeType.lowercased().hasPrefix("image/")
+                if isImage && hasImage {
+                    return nil
+                }
+                if isImage {
+                    hasImage = true
+                }
+                return attachment
+            }
+            let trimmedContent = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let content = trimmedContent.isEmpty && !attachments.isEmpty
+                ? "Image generated. Delivering over mesh…"
+                : response.content
             let packet = AgentResponsePacket(
                 requestID: responseID,
-                content: response.content,
+                content: content,
                 isError: response.isError,
                 sessionID: request.sessionID,
                 chunkIndex: nil,
                 chunkTotal: nil
             )
-            let attachments: [AgentRuntimeAttachment] = response.attachments?.compactMap { item in
-                guard let data = Data(base64Encoded: item.dataBase64) else { return nil }
-                let fileName = item.fileName ?? "attachment"
-                return AgentRuntimeAttachment(data: data, fileName: fileName, mimeType: item.mimeType)
-            } ?? []
             return AgentRuntimeResult(response: packet, attachments: attachments)
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

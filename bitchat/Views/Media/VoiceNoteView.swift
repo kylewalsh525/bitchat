@@ -99,22 +99,17 @@ struct VoiceNoteView: View {
             RoundedRectangle(cornerRadius: 14)
                 .stroke(borderColor, lineWidth: 1)
         )
-        .task {
-            // Defer loading to let UI settle after view appears
+        .task(id: url) {
+            // Defer loading to let UI settle after url changes.
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1s
+            playback.replaceURL(url)
             playback.loadDuration()
             await withCheckedContinuation { continuation in
                 WaveformCache.shared.waveform(for: url, completion: { bins in
-                    waveform = bins
+                    self.waveform = bins
                     continuation.resume()
                 })
             }
-        }
-        .onChange(of: url) { newValue in
-            WaveformCache.shared.waveform(for: newValue, completion: { bins in
-                self.waveform = bins
-            })
-            playback.replaceURL(newValue)
         }
         .onDisappear {
             playback.stop()

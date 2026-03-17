@@ -289,6 +289,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     var torRestartPending: Bool = false
     // Ensure we set up DM subscription only once per app session
     var nostrHandlersSetup: Bool = false
+    private var didPrewarmThirdweb: Bool = false
     var geoChannelCoordinator: GeoChannelCoordinator?
     
     // MARK: - Caches
@@ -371,6 +372,24 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let trancheIndex: UInt32?
         let trancheCount: UInt32?
         let trancheTokenCount: UInt32?
+    }
+
+    struct LastX402PaymentContext: Equatable {
+        let requestID: String
+        let paymentID: String
+        let chainID: UInt64
+        let tokenAddress: String
+        let payTo: String
+        let gatewayURL: String
+        let updatedAt: Date
+
+        var pathSummary: String {
+            [
+                "chain eip155:\(chainID)",
+                "gateway \(gatewayURL)",
+                "token \(tokenAddress)"
+            ].joined(separator: ", ")
+        }
     }
 
     struct AgentQuoteSelectionOption: Equatable {
@@ -511,7 +530,15 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         var retriesLeft: Int
         let sentAt: Date
     }
+
+    struct PendingAgentImageDelivery {
+        let requestID: String
+        let threadID: PeerID
+        let startedAt: Date
+    }
+
     var pendingAgentRequests: [String: AgentRequestContext] = [:]
+    @Published var pendingAgentImageDeliveries: [String: PendingAgentImageDelivery] = [:]
     var pendingInboundPaymentRequests: [String: PendingInboundPaymentRequest] = [:]
     @Published var pendingAgentPayments: [String: AgentPaymentPrompt] = [:]
     @Published var activeAgentQuoteSelections: [AgentQuoteSelectionSummary] = []
@@ -536,11 +563,14 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     var inboundPaymentExpiryTimers: [String: Timer] = [:]
     var agentStreamingRetries: Set<String> = []
     private var agentResponseRetries: Set<String> = []
+    var providerRuntimeExecutionKeys: Set<String> = []
     var pendingMintProxyResponses: [String: PendingMintProxyResponse] = [:]
     var agentRetryQueue = AgentRetryQueue()
     var paymentFilter = AgentPaymentFilter()
     var offlineFinalizationTimer: Timer?
     var inFlightAgentPaymentRequestIDs: Set<String> = []
+    var inFlightInboundPaymentRequestKeys: Set<String> = []
+    @Published var lastX402PaymentContext: LastX402PaymentContext? = nil
 
     struct AgentResponseCacheEntry {
         let response: AgentResponsePacket
@@ -1195,13 +1225,25 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let providerNeedsX402 = agentConfig.paymentTerms?.sanitized()?.paymentRail == .x402
         let requesterNeedsX402 = agentRequesterPreferences.allowX402Payments
         let shouldEnable = providerNeedsX402 || requesterNeedsX402
-        guard flags.enableX402Payments != shouldEnable else {
-            agentMeshFlags = flags
-            return
+        if flags.enableX402Payments != shouldEnable {
+            flags.enableX402Payments = shouldEnable
+            flags.save(to: userDefaults)
         }
-        flags.enableX402Payments = shouldEnable
-        flags.save(to: userDefaults)
         agentMeshFlags = flags
+        if shouldEnable {
+            prewarmThirdwebIfNeeded()
+        }
+    }
+
+    private func prewarmThirdwebIfNeeded() {
+        guard !didPrewarmThirdweb else { return }
+        guard thirdwebGuestWalletBridge.isBridgeAvailable else { return }
+        // Avoid doing work in builds that aren't configured for x402.
+        guard thirdwebGuestWalletBridge.configuredClientID() != nil else { return }
+        didPrewarmThirdweb = true
+        Task { @MainActor in
+            await thirdwebGuestWalletBridge.prewarm(timeoutSeconds: 20)
+        }
     }
 
     // MARK: - Agent Memory
@@ -2161,7 +2203,17 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
     @objc private func appDidBecomeActive() {
         setupAgentPaymentLifecycle()
         Task { [weak self] in
-            await self?.agentPaymentBridge.finalizePendingOfflinePayments()
+            guard let self else { return }
+            let finalizedCount = await self.agentPaymentBridge.finalizePendingOfflinePayments(
+                enablePaymentLocking: self.agentMeshFlags.enablePaymentLocking
+            )
+            if finalizedCount > 0 {
+                self.notifyWalletStateChanged(
+                    reason: "offline-finalization",
+                    requestID: nil,
+                    rail: .cashu
+                )
+            }
         }
 
         // Check Bluetooth state and show alert if needed
@@ -2510,6 +2562,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         // Clear in-flight agent/payment state.
         pendingAgentRequests.removeAll(keepingCapacity: false)
+        pendingAgentImageDeliveries.removeAll(keepingCapacity: false)
         pendingInboundPaymentRequests.removeAll(keepingCapacity: false)
         pendingAgentPayments.removeAll(keepingCapacity: false)
         activeAgentQuoteSelections.removeAll(keepingCapacity: false)
@@ -2528,11 +2581,14 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         agentStreamingBuffers.removeAll(keepingCapacity: false)
         agentStreamingPaymentPauseKeys.removeAll(keepingCapacity: false)
         agentStreamingRetries.removeAll(keepingCapacity: false)
+        providerRuntimeExecutionKeys.removeAll(keepingCapacity: false)
         agentResponseRetries.removeAll(keepingCapacity: false)
         inFlightAgentPaymentRequestIDs.removeAll(keepingCapacity: false)
+        inFlightInboundPaymentRequestKeys.removeAll(keepingCapacity: false)
         agentResponseAssembler = AgentResponseAssembler()
         agentRetryQueue = AgentRetryQueue()
         paymentFilter = AgentPaymentFilter()
+        lastX402PaymentContext = nil
         draftAttachmentsByContext.removeAll(keepingCapacity: false)
         pendingAgentDraftAttachments.removeAll(keepingCapacity: false)
         pendingAgentAttachmentsBySessionID.removeAll(keepingCapacity: false)
@@ -3745,6 +3801,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             } else {
                 handlePublicMessage(message)
             }
+            clearPendingImageDeliveryIfNeeded(message)
             handleIncomingAgentAttachmentIfNeeded(message)
             
             // Post-processing
@@ -3767,6 +3824,19 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
 
         pendingAgentAttachmentsByPeerID[senderPeerID, default: []].append(attachment)
         prunePendingAgentAttachments(for: senderPeerID)
+    }
+
+    @MainActor
+    private func clearPendingImageDeliveryIfNeeded(_ message: BitchatMessage) {
+        guard message.isPrivate else { return }
+        guard message.content.hasPrefix("[image] ") else { return }
+        if let senderPeerID = message.senderPeerID, senderPeerID.isAgentSession {
+            clearPendingAgentImageDelivery(for: senderPeerID)
+            return
+        }
+        if let selected = selectedPrivateChatPeer, selected.isAgentSession {
+            clearPendingAgentImageDelivery(for: selected)
+        }
     }
 
     @MainActor
@@ -4080,7 +4150,12 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let requestedRole = request.role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let sessionID = normalizeSessionID(request.sessionID ?? UUID().uuidString)
         let trimmedAlias = request.senderAlias?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let senderAlias = (trimmedAlias?.isEmpty == false) ? trimmedAlias! : "anon-\(UUID().uuidString.prefix(8))"
+        let senderAlias = {
+            if let trimmedAlias, !trimmedAlias.isEmpty {
+                return trimmedAlias
+            }
+            return "anon-\(UUID().uuidString.prefix(8))"
+        }()
         let session = ensureAgentSession(
             peerID: peerID,
             sessionID: sessionID,
@@ -4090,6 +4165,15 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             persist: false
         )
         let senderName = session.peerNickname
+        let runtimeExecutionKey = providerRuntimeExecutionKey(
+            requestID: request.requestID,
+            peerID: peerID,
+            sessionID: session.sessionID
+        )
+        if providerRuntimeExecutionKeys.contains(runtimeExecutionKey),
+           pendingInboundPaymentRequests[request.requestID] == nil {
+            return
+        }
         let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         let createdAtMs = request.createdAtMs ?? nowMs
         let ttlMs = request.ttlMs ?? TransportConfig.agentRequestTTLms
@@ -4364,6 +4448,13 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                 isError: response.isError
             ) {
                 cancelAgentResponseTimeout(requestID: response.requestID, sessionID: sessionID)
+                markPendingAgentImageDeliveryIfNeeded(
+                    requestID: response.requestID,
+                    threadID: threadID,
+                    role: role,
+                    content: assembled.content,
+                    isError: assembled.isError
+                )
                 _ = pendingAgentRequests.removeValue(forKey: response.requestID)
                 pendingAgentPayments.removeValue(forKey: response.requestID)
                 clearDeferredAgentResponses(for: response.requestID)
@@ -4391,6 +4482,13 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         }
 
         cancelAgentResponseTimeout(requestID: response.requestID, sessionID: sessionID)
+        markPendingAgentImageDeliveryIfNeeded(
+            requestID: response.requestID,
+            threadID: threadID,
+            role: role,
+            content: response.content,
+            isError: response.isError
+        )
         _ = pendingAgentRequests.removeValue(forKey: response.requestID)
         pendingAgentPayments.removeValue(forKey: response.requestID)
         clearDeferredAgentResponses(for: response.requestID)
@@ -5032,13 +5130,18 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         if trimmedRole.hasPrefix("@") {
             let nickname = String(trimmedRole.dropFirst()).lowercased()
             if let peer = allPeers.first(where: { $0.nickname.lowercased() == nickname }) {
+                if let info = peer.agentInfo,
+                   !isPaymentCompatibleProvider(info) {
+                    return .error(message: paymentCompatibilityError(for: info))
+                }
                 let requestID = UUID().uuidString
                 let alias = "anon-\(UUID().uuidString.prefix(8))"
                 let session = startAgentSession(peerID: peer.peerID, role: "direct", peerNickname: alias)
                 let draftAttachments = takePendingAgentDraftAttachments()
                 let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
                 let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
-                let ttlMs = TransportConfig.agentRequestTTLms
+                let ttlMs = effectiveAgentRequestTTLms(for: "direct", requestedTTLms: TransportConfig.agentRequestTTLms)
+                let retries = effectiveAgentRequestRetryBudget(for: "direct")
                 let request = AgentRequestPacket(
                     requestID: requestID,
                     role: "direct",
@@ -5063,7 +5166,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                     draftAttachments: draftAttachments,
                     createdAtMs: createdAtMs,
                     ttlMs: ttlMs,
-                    retriesLeft: TransportConfig.agentRequestMaxRetries,
+                    retriesLeft: retries,
                     sentAt: Date()
                 )
                 addAgentRequestDM(
@@ -5107,6 +5210,15 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
                     message: "No providers found for role '\(trimmedRole)' with filter (\(paymentFilter.description)). Try again or adjust Settings > Agents > Requester preferences."
                 )
             }
+            if hasReachableRoleCandidateIgnoringPaymentCompatibility(
+                role: normalizedRole,
+                allowAnyRole: allowAnyRole,
+                minimumQuality: 0
+            ) {
+                return .error(
+                    message: "No payment-compatible providers for role '\(trimmedRole)'. You need either a shared Cashu mint (Wallet > approved mints) or x402 enabled with guest wallet setup."
+                )
+            }
             return .error(
                 message: "No providers found for role '\(trimmedRole)'. Wait for agent announces nearby or try another role."
             )
@@ -5119,7 +5231,8 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
         let draftAttachments = takePendingAgentDraftAttachments()
         let attachmentCount = draftAttachments.isEmpty ? nil : UInt8(min(draftAttachments.count, 255))
         let createdAtMs = UInt64(Date().timeIntervalSince1970 * 1000)
-        let ttlMs = TransportConfig.agentRequestTTLms
+        let ttlMs = effectiveAgentRequestTTLms(for: requestRole, requestedTTLms: TransportConfig.agentRequestTTLms)
+        let retries = effectiveAgentRequestRetryBudget(for: requestRole)
         let request = AgentRequestPacket(
             requestID: requestID,
             role: requestRole,
@@ -5144,7 +5257,7 @@ final class ChatViewModel: ObservableObject, BitchatDelegate, CommandContextProv
             draftAttachments: draftAttachments,
             createdAtMs: createdAtMs,
             ttlMs: ttlMs,
-            retriesLeft: TransportConfig.agentRequestMaxRetries,
+            retriesLeft: retries,
             sentAt: Date()
         )
         addAgentRequestDM(

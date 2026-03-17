@@ -1,6 +1,16 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "/agentchoose %@ <1-%@>" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "/agentchoose %1$@ <1-%2$@>"
+          }
+        }
+      }
+    },
     "%@" : {
       "comment" : "Non-localizable symbol used in code",
       "extractionState" : "manual",
@@ -182,6 +192,36 @@
       },
       "shouldTranslate" : false
     },
+    "%@ %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@"
+          }
+        }
+      }
+    },
+    "%@ %@ • %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@ • %3$@"
+          }
+        }
+      }
+    },
+    "%@ %@%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@%3$@"
+          }
+        }
+      }
+    },
     "%@ active" : {
       "comment" : "A label at the bottom of the people list sheet showing the number of active users.",
       "localizations" : {
@@ -361,16 +401,47 @@
         }
       }
     },
+    "%@ attached" : {
+
+    },
+    "%@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
+    "%@/100" : {
+
+    },
     "•" : {
+
+    },
+    "`modelHash` is a self-attested artifact digest (identity-bound via signed announces). It is not proof the model is actually running." : {
+
+    },
+    "A guest wallet is a temporary wallet BitChat creates for you. No account is required." : {
+
+    },
+    "Accepted mints (one per line)" : {
+
+    },
+    "Add mint URLs you are willing to accept. Requesters can pay you when they have funds in at least one matching mint." : {
+
+    },
+    "After enabling, nearby peers can discover you and send agent requests." : {
+
+    },
+    "Agent config (redacted)" : {
 
     },
     "Agent Identity" : {
 
     },
-    "Agent setup" : {
-
-    },
-    "Agent Setup" : {
+    "App version + platform" : {
 
     },
     "app_info.app_name" : {
@@ -6280,6 +6351,45 @@
         }
       }
     },
+    "Approve mint(s)?" : {
+
+    },
+    "Approving allows this device to import and spend tokens from:\n\n%@" : {
+
+    },
+    "Attach memory notes to include with requests:" : {
+
+    },
+    "Auto-pick applies as soon as quote collection closes." : {
+
+    },
+    "best quality <= budget" : {
+
+    },
+    "BitChat keeps the wallet on this device and stores only the wallet address in this beta." : {
+
+    },
+    "Cashu" : {
+
+    },
+    "Cashu (default)" : {
+
+    },
+    "Cashu (private + offline-capable)" : {
+
+    },
+    "Cashu is like digital cash. You can import a token to add funds, then pay agents even without internet." : {
+
+    },
+    "Cashu works across BLE mesh and offers stronger privacy. x402 is online-only and uses on-chain/facilitator infrastructure." : {
+
+    },
+    "Chain: eip155:%@" : {
+
+    },
+    "cheapest" : {
+
+    },
     "Choose an image" : {
       "comment" : "A label displayed above a button that allows the user to choose an image to send.",
       "extractionState" : "manual",
@@ -6638,6 +6748,9 @@
           }
         }
       }
+    },
+    "Collect timeout: %@s" : {
+
     },
     "common.cancel" : {
       "extractionState" : "manual",
@@ -19201,7 +19314,25 @@
     "Delete all sessions" : {
 
     },
+    "Disable provider mode" : {
+
+    },
     "echo" : {
+
+    },
+    "Echo (demo)" : {
+
+    },
+    "Echo mode is useful for testing provider discovery and payment flows. It does not run a real model." : {
+
+    },
+    "Economy discount: %@%%" : {
+
+    },
+    "Economy wait: ~%@s" : {
+
+    },
+    "Effective payment terms" : {
 
     },
     "encryption.accessibility.establishing" : {
@@ -20993,6 +21124,21 @@
           }
         }
       }
+    },
+    "Export a redacted debug bundle for beta support." : {
+
+    },
+    "Export is available after importing a token." : {
+
+    },
+    "Export token" : {
+
+    },
+    "fastest" : {
+
+    },
+    "Feature flags (agent runtime/payments/locking)" : {
+
     },
     "Fetch models to see local catalog" : {
 
@@ -22793,6 +22939,18 @@
     "Gateway" : {
 
     },
+    "Gateway runs locally (for example, on your laptop). Your model identity (`modelHash`) is self-attested, not proof of compute." : {
+
+    },
+    "Gateway: %@" : {
+
+    },
+    "Generate bundle" : {
+
+    },
+    "Generating…" : {
+
+    },
     "geohash_people.action.block" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23688,6 +23846,18 @@
         }
       }
     },
+    "If you approve, this device can import and spend Cashu proofs from these mint URLs." : {
+
+    },
+    "If you haven't connected yet, BitChat will create a guest wallet when you pay." : {
+
+    },
+    "If you remove or reset your guest wallet, any remaining funds in that wallet move with it and become inaccessible from BitChat." : {
+
+    },
+    "Image unavailable" : {
+
+    },
     "Images are only available in mesh chats." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23866,6 +24036,9 @@
           }
         }
       }
+    },
+    "Immediate discount: %@%%" : {
+
     },
     "LM Studio (local)" : {
 
@@ -31082,6 +31255,18 @@
         }
       }
     },
+    "Locking: %@" : {
+
+    },
+    "manual" : {
+
+    },
+    "Memory" : {
+
+    },
+    "Memory snippets are local-only and prepended to outgoing agent prompts." : {
+
+    },
     "mesh_peers.tooltip.new_messages" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -31261,19 +31446,174 @@
         }
       }
     },
+    "Min quality: %@" : {
+
+    },
+    "Mint: %@ (%@)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Mint: %1$@ (%2$@)"
+          }
+        }
+      }
+    },
     "Model" : {
+
+    },
+    "Model hash claims are self-attested by providers (identity-bound, not proof of compute)." : {
+
+    },
+    "Model type" : {
+
+    },
+    "No approved wallet mints found yet. Add mints in Wallet → Mint Allowlist, then return here." : {
+
+    },
+    "No balance yet." : {
+
+    },
+    "No Cashu tokens, proofs, or private keys are included." : {
+
+    },
+    "No catalog loaded yet. You can continue with manual entry." : {
+
+    },
+    "No in-flight payments." : {
+
+    },
+    "No known models loaded." : {
+
+    },
+    "No memory notes yet. Add one to improve follow-up answers." : {
+
+    },
+    "No quotes yet. Waiting for providers…" : {
 
     },
     "No sessions yet" : {
 
     },
+    "none" : {
+
+    },
+    "None (unsafe)" : {
+
+    },
+    "Notaries are peers that can attest to a spend attempt. This reduces offline double-spend risk." : {
+
+    },
+    "Notary collect timeout: %@ ms" : {
+
+    },
+    "Offline acceptance can delay final settlement until mint finality." : {
+
+    },
+    "Offline acceptance is higher risk until the mint finalizes. Default locking is P2PK (recommended)." : {
+
+    },
+    "offline accepted" : {
+
+    },
+    "Offline accepted" : {
+
+    },
+    "Offline notary receipts required: %@" : {
+
+    },
     "Ollama (local)" : {
+
+    },
+    "online required" : {
+
+    },
+    "Online required" : {
+
+    },
+    "Open settings" : {
+
+    },
+    "p2pk" : {
+
+    },
+    "P2PK" : {
+
+    },
+    "P2PK ties proofs to this request and reduces interception risk." : {
+
+    },
+    "Panic wipe (delete all data)" : {
+
+    },
+    "Pay now" : {
+
+    },
+    "Pay to: %@" : {
+
+    },
+    "payment %@…" : {
+
+    },
+    "Payment is blocked until you approve this mint." : {
+
+    },
+    "Payment store summary (counts + statuses)" : {
+
+    },
+    "Payments" : {
+
+    },
+    "Payments are optional. You can enable them later." : {
 
     },
     "people" : {
 
     },
+    "per request" : {
+
+    },
+    "per token" : {
+
+    },
+    "Pick a short name. You can change it any time." : {
+
+    },
+    "Price 0 disables payment." : {
+
+    },
+    "Pricing: %@" : {
+
+    },
+    "Provider mode advertises your agent info to nearby peers. You can disable it anytime in Settings." : {
+
+    },
+    "Quality" : {
+
+    },
     "Quality %@" : {
+
+    },
+    "Quote tiers" : {
+
+    },
+    "Quote wait options" : {
+
+    },
+    "Rail: %@ · Settlement: %@ · Locking: %@ · TTL: %@s" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Rail: %1$@ · Settlement: %2$@ · Locking: %3$@ · TTL: %4$@s"
+          }
+        }
+      }
+    },
+    "Rail: x402" : {
+
+    },
+    "Recent agent/payment events (redacted)" : {
 
     },
     "recording %@" : {
@@ -31455,6 +31795,15 @@
         }
       }
     },
+    "Request TTL: %@s" : {
+
+    },
+    "Required receipts: %@" : {
+
+    },
+    "Reserved (in-flight)" : {
+
+    },
     "Resume" : {
 
     },
@@ -31468,6 +31817,9 @@
 
     },
     "Runtime" : {
+
+    },
+    "Runtime timeout: %@s" : {
 
     },
     "save" : {
@@ -31649,7 +32001,25 @@
         }
       }
     },
+    "saved %@" : {
+
+    },
+    "Select a model from the gateway catalog:" : {
+
+    },
     "sessions" : {
+
+    },
+    "Settings" : {
+
+    },
+    "Settlement: %@" : {
+
+    },
+    "Standard discount: %@%%" : {
+
+    },
+    "Standard wait: ~%@s" : {
 
     },
     "system.chat.blocked" : {
@@ -34337,7 +34707,43 @@
         }
       }
     },
+    "Tap “Approve mints” first." : {
+
+    },
+    "thirdweb bridge is unavailable on this device." : {
+
+    },
+    "This clears chat history, keys, sessions, wallet proofs, and all local settings." : {
+
+    },
+    "This deletes MEMORY.md, daily logs, and all saved agent sessions on this device." : {
+
+    },
+    "This mint is local-only. It must be running and reachable from the provider device." : {
+
+    },
+    "This stops advertising as an agent to nearby peers." : {
+
+    },
+    "This token is from a new mint. You must approve it before you can import or spend it." : {
+
+    },
     "Timeout: %@s" : {
+
+    },
+    "Tip: if you don’t know what to pick, use `General` and quality `50`." : {
+
+    },
+    "To ask an agent for help, send this command:" : {
+
+    },
+    "Token: %@" : {
+
+    },
+    "Tranche token granularity: %@" : {
+
+    },
+    "Unsafe: offline acceptance without p2pk lock increases relay interception/double-spend risk." : {
 
     },
     "verification.my_qr.accessibility_label" : {
@@ -36308,6 +36714,48 @@
           }
         }
       }
+    },
+    "Wallet setup is guided. You can do it now, or later in Settings." : {
+
+    },
+    "Wallet summary (balances + reserved)" : {
+
+    },
+    "Wallet: %@" : {
+
+    },
+    "x402" : {
+
+    },
+    "x402 (online, less private)" : {
+
+    },
+    "x402 bridge unavailable on this device." : {
+
+    },
+    "x402 is online-only and less private than Cashu. Use this when both requester and provider have internet path." : {
+
+    },
+    "x402 is the online-only option. If you have internet, it can be used to pay without Cashu." : {
+
+    },
+    "x402 isn't available in this build." : {
+
+    },
+    "x402 payments are online-only and less private than Cashu." : {
+
+    },
+    "x402 readiness: %@" : {
+
+    },
+    "x402 requires internet and is less private than Cashu." : {
+
+    },
+    "You are about to advertise as a provider." : {
+
+    },
+    "You can keep going even if you skip optional permissions." : {
+
     }
   },
   "version" : "1.1"

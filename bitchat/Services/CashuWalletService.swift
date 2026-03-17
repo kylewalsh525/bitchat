@@ -46,6 +46,22 @@ final class CashuWalletService {
     private let account = "wallet.v1"
     private var state = WalletState()
 
+    private func postUpdateNotification(reason: String, rail: AgentPaymentRail, requestID: String? = nil) {
+        var payload: [String: String] = [
+            WalletNotificationKeys.source: "CashuWalletService",
+            WalletNotificationKeys.rail: rail.rawValue,
+            WalletNotificationKeys.reason: reason
+        ]
+        if let requestID {
+            payload[WalletNotificationKeys.requestID] = requestID
+        }
+        NotificationCenter.default.post(
+            name: .cashuWalletDidUpdate,
+            object: self,
+            userInfo: payload
+        )
+    }
+
     init(keychain: KeychainManagerProtocol, allowlist: CashuMintAllowlistStore) {
         self.keychain = keychain
         self.allowlist = allowlist
@@ -81,8 +97,13 @@ final class CashuWalletService {
             }
         }
 
+        guard next != state.proofs else {
+            return 0
+        }
+
         state.proofs = next
         save()
+        postUpdateNotification(reason: "import", rail: .cashu)
         return importedAmount
     }
 
@@ -90,17 +111,22 @@ final class CashuWalletService {
         let normalizedMint = CashuMintAllowlistStore.normalizeMintURL(mintURL)
         let selected = try selectProofs(mintURL: normalizedMint, unit: unit, amount: amount)
         let selectedFingerprints = Set(selected.map { $0.fingerprint })
+        let originalProofs = state.proofs
         state.proofs.removeAll { selectedFingerprints.contains($0.fingerprint) }
-        save()
+        let mutated = originalProofs != state.proofs
 
         guard let token = CashuTokenParser.exportTokenString(
             mintURL: normalizedMint,
             unit: unit,
             proofs: selected.map { $0.proof }
         ) else {
-            state.proofs.append(contentsOf: selected)
+            state.proofs = originalProofs
             save()
             throw WalletError.invalidToken
+        }
+        if mutated {
+            save()
+            postUpdateNotification(reason: "export", rail: .cashu)
         }
         return token
     }
@@ -129,6 +155,8 @@ final class CashuWalletService {
         state.proofs.removeAll { fingerprints.contains($0.fingerprint) }
         save()
 
+        postUpdateNotification(reason: "reserve", rail: .cashu, requestID: request.paymentID)
+
         let total = selected.reduce(UInt64(0)) { $0 + $1.proof.amount }
         let nullifiers = selected.map { cashuNullifier(mintURL: $0.mintURL, unit: $0.unit, secret: $0.proof.secret) }
 
@@ -146,14 +174,21 @@ final class CashuWalletService {
     }
 
     func commitReserved(paymentID: String) {
+        guard state.reservedByPaymentID[paymentID] != nil else { return }
         state.reservedByPaymentID.removeValue(forKey: paymentID)
         save()
+        postUpdateNotification(reason: "commit", rail: .cashu, requestID: paymentID)
     }
 
     func replaceReserved(paymentID: String, mintURL: String, unit: String, proofs: [CashuProof]) {
-        state.reservedByPaymentID[paymentID] = proofs.map {
+        let next = proofs.map {
             StoredProof(mintURL: mintURL, unit: unit, proof: $0)
         }
+        if let existing = state.reservedByPaymentID[paymentID], existing == next {
+            return
+        }
+        state.reservedByPaymentID[paymentID] = next
+        postUpdateNotification(reason: "replace-reserved", rail: .cashu, requestID: paymentID)
         save()
     }
 
@@ -178,14 +213,19 @@ final class CashuWalletService {
     func rollbackReserved(paymentID: String) {
         guard let reserved = state.reservedByPaymentID.removeValue(forKey: paymentID) else { return }
         state.proofs.append(contentsOf: reserved)
+        postUpdateNotification(reason: "rollback", rail: .cashu, requestID: paymentID)
         save()
     }
 
     /// Clears all wallet proofs/reservations and removes the persisted keychain payload.
     /// Intended for emergency wipe flows (panic wipe) and tests.
     func wipeAllWallet() {
+        let hasState = !state.proofs.isEmpty || !state.reservedByPaymentID.isEmpty
         state = WalletState()
         keychain.delete(key: account, service: service)
+        if hasState {
+            postUpdateNotification(reason: "wipe", rail: .cashu)
+        }
     }
 
     private func selectProofs(mintURL: String, unit: String, amount: UInt64) throws -> [StoredProof] {

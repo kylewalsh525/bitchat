@@ -33,6 +33,7 @@ This document maps the codebase to the agent mesh feature and explains how to ex
   - `bitchat/Services/AgentPaymentStore.swift`
   - `bitchat/Services/AgentPaymentLockKeyStore.swift`
   - `bitchat/Services/AgentPaymentFilter.swift`
+  - `bitchat/Services/WalletNotifications.swift`
   - `bitchat/Services/AgentPaymentNotaryService.swift`
   - `bitchat/Services/AgentFairExchangeService.swift`
   - `bitchat/Services/AgentSettlementGossip.swift`
@@ -77,6 +78,8 @@ This document maps the codebase to the agent mesh feature and explains how to ex
   - `bitchatTests/Services/AgentPaymentNotaryServiceTests.swift`
   - `bitchatTests/Services/AgentSettlementGossipTests.swift`
   - `bitchatTests/Services/CashuModelsTests.swift`
+  - `bitchatTests/Services/CashuWalletServiceNotificationTests.swift`
+  - `bitchatTests/Services/ThirdwebGuestWalletBridgeTests.swift`
   - `bitchatTests/Services/X402ModelsTests.swift`
   - `bitchatTests/Services/MintGatewayServiceTests.swift`
   - `bitchatTests/Services/AgentMemoryStoreTests.swift`
@@ -126,6 +129,7 @@ flowchart LR
 7. When fair exchange is active (4E), provider sends encrypted response offer chunks before payment and includes receipt unlock key so requester can decrypt deterministically.
 8. When lock-required payment terms are active, requester relocks selected proofs to a per-request pubkey (direct mint path first, gateway relock fallback), and provider enforces fail-closed lock binding before offline/online acceptance.
 9. For `paymentRail=x402`, requester builds `xpay:` payload using `ThirdwebGuestWalletBridge`, and provider settles via `X402GatewayClient` (`/x402/settle`).
+10. Wallet UI reflects state transitions from payment operations via notification-driven updates (`cashuWalletDidUpdate`, `thirdwebWalletDidUpdate`) so balances/reservations and wallet-bridge context remain current without manual refresh.
 
 ## Settlement Gossip Flow (Phase 4B)
 1. Provider acceptance path registers hashed nullifiers in `AgentSettlementGossip`.
@@ -207,6 +211,10 @@ flowchart LR
   - `AgentInfo v1/v2` encode/decode
   - request/response/chunk packet round-trips
   - payment payload/receipt and mint proxy round-trips
+- Notifications/UI refresh:
+  - Cashu wallet mutation emits `.cashuWalletDidUpdate` for import/reserve/commit/rollback/replace/resets.
+  - Thirdweb bridge mutation emits `.thirdwebWalletDidUpdate` for ensure/pay/link/reset paths.
+  - `WalletView` and payment prompt update while open without requiring re-open.
 - Reliability:
   - TTL expiry removes pending request/payment state
   - retry queue flushes when peers become reachable

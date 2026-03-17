@@ -17,6 +17,14 @@ final class GeoRelayDirectory {
     }
 
     static let shared = GeoRelayDirectory()
+    // Some relays intermittently ship invalid TLS chains, which causes noisy ATS trust
+    // failures on iOS/macOS. Keep a small denylist to prevent repeated connection spam.
+    nonisolated private static let blockedHosts: Set<String> = [
+        "relay.evanverma.com",
+        "relay.toastr.net",
+        "relay.mostro.network",
+        "nostr.notribe.net"
+    ]
 
     private(set) var entries: [Entry] = []
     private let cacheFileName = "georelays_cache.csv"
@@ -253,10 +261,16 @@ final class GeoRelayDirectory {
             host = host.replacingOccurrences(of: "wss://", with: "")
             host = host.replacingOccurrences(of: "ws://", with: "")
             host = host.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if blockedHosts.contains(host.lowercased()) { continue }
             guard let lat = Double(parts[1]), let lon = Double(parts[2]) else { continue }
             result.insert(Entry(host: host, lat: lat, lon: lon))
         }
         return Array(result)
+    }
+
+    nonisolated static func isBlocked(host: String) -> Bool {
+        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return blockedHosts.contains(normalized)
     }
 
     private func cacheURL() -> URL? {

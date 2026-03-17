@@ -8,8 +8,52 @@
 import Foundation
 
 extension ChatViewModel {
+    @MainActor
+    func providerRuntimeExecutionKey(requestID: String, peerID: PeerID, sessionID: String) -> String {
+        "\(peerID.id.lowercased())|\(normalizeSessionID(sessionID))|\(requestID.lowercased())"
+    }
+
+    @MainActor
+    func beginProviderRuntimeExecution(key: String) -> Bool {
+        guard !providerRuntimeExecutionKeys.contains(key) else { return false }
+        providerRuntimeExecutionKeys.insert(key)
+        return true
+    }
+
+    @MainActor
+    func endProviderRuntimeExecution(key: String) {
+        providerRuntimeExecutionKeys.remove(key)
+    }
+
     private var agentRequestRetryInterval: TimeInterval {
         TransportConfig.agentRequestRetryIntervalSeconds
+    }
+
+    private func isLongRunningAgentRole(_ role: String) -> Bool {
+        let normalized = AgentProviderRole(normalizing: role)
+        return normalized == .image || normalized == .video || normalized == .multimodal
+    }
+
+    func effectiveAgentRequestTTLms(for role: String, requestedTTLms: UInt32) -> UInt32 {
+        if isLongRunningAgentRole(role) {
+            return max(requestedTTLms, 120_000)
+        }
+        return requestedTTLms
+    }
+
+    func effectiveAgentRequestRetryBudget(for role: String) -> Int {
+        if isLongRunningAgentRole(role) {
+            return min(1, TransportConfig.agentRequestMaxRetries)
+        }
+        return TransportConfig.agentRequestMaxRetries
+    }
+
+    private func retryInterval(for context: AgentRequestContext?) -> TimeInterval {
+        guard let context else { return agentRequestRetryInterval }
+        if isLongRunningAgentRole(context.role) {
+            return max(agentRequestRetryInterval, 20)
+        }
+        return agentRequestRetryInterval
     }
 
     private func nowMs() -> UInt64 {
@@ -24,7 +68,8 @@ extension ChatViewModel {
     @MainActor
     func scheduleAgentRequestRetry(requestID: String) {
         guard agentRequestTimeouts[requestID] == nil else { return }
-        let timer = Timer.scheduledTimer(withTimeInterval: agentRequestRetryInterval, repeats: false) { [weak self] _ in
+        let interval = retryInterval(for: pendingAgentRequests[requestID])
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
                 self.agentRequestTimeouts.removeValue(forKey: requestID)

@@ -206,8 +206,20 @@ final class AgentPaymentStore {
         record.details = details
         if !nullifiers.isEmpty {
             record.nullifiers = nullifiers
-            for nullifier in nullifiers {
-                state.nullifierToRequestID[nullifier] = requestID
+            switch status {
+            case .acceptedOffline, .finalizedOnline:
+                for nullifier in nullifiers {
+                    state.nullifierToRequestID[nullifier] = requestID
+                }
+            case .rejected:
+                for nullifier in nullifiers where state.nullifierToRequestID[nullifier] == requestID {
+                    state.nullifierToRequestID.removeValue(forKey: nullifier)
+                }
+            }
+        } else if status == .rejected {
+            // Rejected requests must not permanently reserve nullifiers across requests.
+            for (nullifier, mappedRequestID) in state.nullifierToRequestID where mappedRequestID == requestID {
+                state.nullifierToRequestID.removeValue(forKey: nullifier)
             }
         }
         if let notaryReceipts {
@@ -222,6 +234,9 @@ final class AgentPaymentStore {
         guard var record = state.records[requestID] else { return }
         record.state = .failed
         record.details = details
+        for (nullifier, mappedRequestID) in state.nullifierToRequestID where mappedRequestID == requestID {
+            state.nullifierToRequestID.removeValue(forKey: nullifier)
+        }
         record.updatedAtMs = nowMs()
         state.records[requestID] = record
         save()
@@ -245,13 +260,28 @@ final class AgentPaymentStore {
             return .paymentMismatch
         }
 
+        var removedStaleMappings = false
         for nullifier in nullifiers {
             if let existingRequest = state.nullifierToRequestID[nullifier] {
                 if existingRequest == requestID {
                     return .duplicateForRequest
                 }
+                guard let existingRecord = state.records[existingRequest] else {
+                    state.nullifierToRequestID.removeValue(forKey: nullifier)
+                    removedStaleMappings = true
+                    continue
+                }
+                if existingRecord.state == .rejected || existingRecord.state == .failed {
+                    state.nullifierToRequestID.removeValue(forKey: nullifier)
+                    removedStaleMappings = true
+                    continue
+                }
                 return .replayAcrossRequests
             }
+        }
+
+        if removedStaleMappings {
+            save()
         }
 
         for nullifier in nullifiers {

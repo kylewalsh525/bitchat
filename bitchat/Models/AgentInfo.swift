@@ -7,6 +7,39 @@
 
 import Foundation
 
+enum AgentProviderRole: String, Codable, CaseIterable {
+    case general
+    case image
+    case video
+    case multimodal = "multi-modal"
+
+    var title: String {
+        switch self {
+        case .general:
+            return "General"
+        case .image:
+            return "Image"
+        case .video:
+            return "Video"
+        case .multimodal:
+            return "Multi-modal"
+        }
+    }
+
+    init(normalizing raw: String) {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let role = AgentProviderRole(rawValue: normalized) {
+            self = role
+            return
+        }
+        if normalized == "multimodal" {
+            self = .multimodal
+            return
+        }
+        self = .general
+    }
+}
+
 enum AgentPaymentRail: String, Codable, CaseIterable {
     case none
     case cashu
@@ -286,12 +319,15 @@ struct AgentPaymentTerms: Codable, Equatable, Hashable {
             .filter { !$0.isEmpty }
         let dedupedMints = Array(NSOrderedSet(array: mints)) as? [String] ?? mints
         let ttl = requestTTLSeconds == 0 ? UInt32(120) : requestTTLSeconds
-        let cleanInputPrice = (pricePerInputToken ?? 0) > 0 ? pricePerInputToken : nil
-        let cleanOutputPrice = (pricePerOutputToken ?? 0) > 0 ? pricePerOutputToken : nil
-        let hasTokenPricing = (cleanInputPrice ?? 0) > 0 || (cleanOutputPrice ?? 0) > 0
-        let resolvedPriceModel: AgentPaymentPriceModel = hasTokenPricing ? .perToken : .perRequest
-        let cleanMinDeposit = (minDeposit ?? 0) > 0 ? minDeposit : nil
-        let cleanGranularity: UInt32? = hasTokenPricing ? max(1, min(4096, granularityTokens ?? 64)) : nil
+        let rawInputPrice = (pricePerInputToken ?? 0) > 0 ? pricePerInputToken : nil
+        let rawOutputPrice = (pricePerOutputToken ?? 0) > 0 ? pricePerOutputToken : nil
+        let hasRawTokenPricing = (rawInputPrice ?? 0) > 0 || (rawOutputPrice ?? 0) > 0
+        let resolvedPriceModel: AgentPaymentPriceModel = priceModel ?? (hasRawTokenPricing ? .perToken : .perRequest)
+        let usingTokenPricing = resolvedPriceModel == .perToken
+        let cleanInputPrice = usingTokenPricing ? rawInputPrice : nil
+        let cleanOutputPrice = usingTokenPricing ? rawOutputPrice : nil
+        let cleanMinDeposit = usingTokenPricing && (minDeposit ?? 0) > 0 ? minDeposit : nil
+        let cleanGranularity: UInt32? = usingTokenPricing ? max(1, min(4096, granularityTokens ?? 64)) : nil
 
         let cleaned: AgentPaymentTerms
         switch paymentRail {

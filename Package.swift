@@ -7,7 +7,7 @@ let package = Package(
     defaultLocalization: "en",
     platforms: [
         .iOS(.v16),
-        .macOS(.v13)
+        .macOS(.v14)
     ],
     products: [
         .executable(
@@ -27,7 +27,8 @@ let package = Package(
             dependencies: [
                 .product(name: "P256K", package: "swift-secp256k1"),
                 .product(name: "BitLogger", package: "BitLogger"),
-                .product(name: "Tor", package: "Arti"),
+                .product(name: "Tor", package: "Arti", condition: .when(platforms: [.macOS])),
+                .product(name: "TorStatic", package: "Arti", condition: .when(platforms: [.iOS])),
                 .product(name: "CashuDevKit", package: "cdk-swift")
             ],
             path: "bitchat",

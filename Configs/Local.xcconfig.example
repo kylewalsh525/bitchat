@@ -11,3 +11,7 @@ PRODUCT_BUNDLE_IDENTIFIER = $(APP_BUNDLE_ID)
 // If you have App Groups enabled on your team, create this group in the dev portal
 // and keep it in sync with your entitlements.
 APP_GROUP_ID = group.$(APP_BUNDLE_ID)
+
+// thirdweb (x402) app client id (public identifier; not a wallet secret).
+// You can create one in the thirdweb dashboard.
+// THIRDWEB_CLIENT_ID = <your_thirdweb_client_id>

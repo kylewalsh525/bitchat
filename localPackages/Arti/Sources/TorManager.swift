@@ -58,6 +58,7 @@ public final class TorManager: ObservableObject {
     // Internal readiness trackers
     private var socksReady: Bool = false { didSet { recomputeReady() } }
     private var restarting: Bool = false
+    private var socksProbeTask: Task<Void, Never>? = nil
 
     // Whether the app must enforce Tor for all connections (fail-closed).
     public var torEnforced: Bool {
@@ -162,6 +163,7 @@ public final class TorManager: ObservableObject {
         if arti_is_running() != 0 {
             SecureLogger.info("TorManager: Arti already running", category: .session)
             startBootstrapMonitor()
+            startSocksReadinessProbe()
             return
         }
 
@@ -178,11 +180,14 @@ public final class TorManager: ObservableObject {
 
         SecureLogger.info("TorManager: arti_start OK (SOCKS \(socksHost):\(socksPort))", category: .session)
         startBootstrapMonitor()
+        startSocksReadinessProbe()
+    }
 
-        // Start SOCKS readiness probe
-        Task.detached(priority: .userInitiated) { [weak self] in
+    private func startSocksReadinessProbe(timeout: TimeInterval = 60.0) {
+        socksProbeTask?.cancel()
+        socksProbeTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
-            let ready = await self.waitForSocksReady(timeout: 60.0)
+            let ready = await self.waitForSocksReady(timeout: timeout)
             await MainActor.run {
                 self.socksReady = ready
                 if ready {
@@ -322,6 +327,8 @@ public final class TorManager: ObservableObject {
             self.isReady = false
             self.socksReady = false
             self.isStarting = false
+            self.socksProbeTask?.cancel()
+            self.socksProbeTask = nil
         }
     }
 
@@ -348,6 +355,8 @@ public final class TorManager: ObservableObject {
                 self.didStart = false
                 self.restarting = false
                 self.bootstrapMonitorStarted = false
+                self.socksProbeTask?.cancel()
+                self.socksProbeTask = nil
                 // Note: Don't clear startedAt here - it will be set fresh on next startIfNeeded()
                 // Clearing it here races with startup and defeats the grace period
             }

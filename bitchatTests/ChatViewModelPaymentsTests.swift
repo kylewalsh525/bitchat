@@ -1490,4 +1490,120 @@ final class ChatViewModelPaymentsTests: XCTestCase {
         XCTAssertFalse(transport.sentMessages.isEmpty)
         XCTAssertTrue(transport.sentMessages[0].content.hasPrefix(AgentSettlementGossip.payloadPrefix))
     }
+
+    @MainActor
+    func testDuplicateInboundPaymentPayloadWhileInFlightIsIgnored() async {
+        let (viewModel, transport) = makePaymentTestViewModel()
+        let peerID = PeerID(str: "peer-dup-inflight")
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
+        let requestID = "req-dup-inflight"
+        let sessionID = "sess-dup-inflight"
+
+        let terms = AgentPaymentTerms(
+            paymentRail: .cashu,
+            settlementMode: .offlineAccepted,
+            unit: "sat",
+            pricePerRequest: 25,
+            acceptedMints: ["https://mint.example"],
+            requestTTLSeconds: 120
+        )
+        let localInfo = AgentInfo(
+            role: "general",
+            modelId: "local",
+            qualityScore: 80,
+            modelHash: nil,
+            paymentTerms: terms
+        )
+        let session = AgentSession(
+            sessionID: sessionID,
+            threadID: peerID,
+            peerID: peerID,
+            peerNickname: "payer",
+            role: "general",
+            createdAt: Date(),
+            senderAlias: "payer",
+            recordID: nil,
+            seedHistory: [],
+            seedInjected: false,
+            history: []
+        )
+        let request = AgentRequestPacket(
+            requestID: requestID,
+            role: "general",
+            prompt: "hello",
+            sessionID: sessionID,
+            attachmentCount: nil,
+            senderAlias: "payer",
+            createdAtMs: nowMs,
+            ttlMs: 30_000
+        )
+
+        let paymentRequest = CashuPaymentRequestEnvelope(
+            version: 1,
+            paymentID: "pay-dup-inflight",
+            requestID: requestID,
+            mintURL: "https://mint.example",
+            unit: "sat",
+            amount: 25,
+            expiresAtMs: nowMs + 120_000,
+            settlementMode: .offlineAccepted,
+            sessionID: sessionID,
+            pricingModel: nil,
+            trancheIndex: nil,
+            trancheCount: nil,
+            trancheTokenCount: nil,
+            outputTokenPrice: nil,
+            inputTokenPrice: nil,
+            minimumDeposit: nil
+        ).encodeString()!
+
+        viewModel.agentPaymentBridge.registerIncomingPaymentRequest(
+            requestID: requestID,
+            sessionID: sessionID,
+            peerID: peerID,
+            paymentRequest: paymentRequest
+        )
+        viewModel.pendingInboundPaymentRequests[requestID] = ChatViewModel.PendingInboundPaymentRequest(
+            request: request,
+            peerID: peerID,
+            session: session,
+            localInfo: localInfo,
+            senderName: "payer",
+            paymentRequest: paymentRequest
+        )
+
+        let payloadEnvelope = CashuPaymentPayloadEnvelope(
+            paymentID: "pay-dup-inflight",
+            requestID: requestID,
+            mintURL: "https://mint.example",
+            unit: "sat",
+            totalAmount: 25,
+            proofs: [CashuProof(amount: 25, secret: "secret-dup-inflight")],
+            nullifiers: ["n-dup-inflight"],
+            clientNonce: "nonce-dup-inflight",
+            createdAtMs: nowMs
+        )
+        let packet = AgentPaymentPayloadPacket(
+            requestID: requestID,
+            sessionID: sessionID,
+            rail: "cashu",
+            payload: payloadEnvelope.toJSONString()!,
+            sentAt: nowMs,
+            clientNonce: "nonce-dup-inflight"
+        )
+
+        // Simulate duplicate delivery while first packet is still being processed.
+        viewModel.handleAgentPaymentPayload(packet, from: peerID)
+        viewModel.handleAgentPaymentPayload(packet, from: peerID)
+
+        let gotReceipt = await waitUntil(timeout: 3.0) {
+            transport.sentAgentPaymentReceipts.contains(where: { $0.receipt.requestID == requestID })
+        }
+        XCTAssertTrue(gotReceipt)
+
+        // Allow any accidental duplicate processing to surface.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let matchingReceipts = transport.sentAgentPaymentReceipts.filter { $0.receipt.requestID == requestID }
+        XCTAssertEqual(matchingReceipts.count, 1)
+    }
 }

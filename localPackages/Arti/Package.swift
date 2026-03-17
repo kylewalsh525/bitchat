@@ -8,9 +8,18 @@ let package = Package(
         .macOS(.v13),
     ],
     products: [
+        // macOS and UIKit/CLI workflows use a dynamic Tor product to avoid
+        // duplicate Rust symbol collisions when linked with Rust-backed bridges.
         .library(
             name: "Tor",
             type: .dynamic,
+            targets: ["Tor"]
+        ),
+        // iOS and other environments use a static Tor product to avoid
+        // runtime framework embedding issues.
+        .library(
+            name: "TorStatic",
+            type: .static,
             targets: ["Tor"]
         ),
     ],
