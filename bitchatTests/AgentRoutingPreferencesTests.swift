@@ -1,4 +1,5 @@
 import XCTest
+@testable import BitFoundation
 @testable import bitchat
 
 @MainActor
@@ -113,4 +114,3 @@ final class AgentRoutingPreferencesTests: XCTestCase {
         XCTAssertEqual(transport.sentAgentRequests.first?.peerID, peerHigh.peerID)
     }
 }
-

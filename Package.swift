@@ -17,6 +17,7 @@ let package = Package(
     ],
     dependencies:[
         .package(path: "localPackages/Arti"),
+        .package(path: "localPackages/BitFoundation"),
         .package(path: "localPackages/BitLogger"),
         .package(url: "https://github.com/21-DOT-DEV/swift-secp256k1", exact: "0.21.1"),
         .package(url: "https://github.com/cashubtc/cdk-swift.git", exact: "0.14.3")
@@ -26,6 +27,7 @@ let package = Package(
             name: "bitchat",
             dependencies: [
                 .product(name: "P256K", package: "swift-secp256k1"),
+                .product(name: "BitFoundation", package: "BitFoundation"),
                 .product(name: "BitLogger", package: "BitLogger"),
                 .product(name: "Tor", package: "Arti", condition: .when(platforms: [.macOS])),
                 .product(name: "TorStatic", package: "Arti", condition: .when(platforms: [.iOS])),
@@ -35,6 +37,7 @@ let package = Package(
             exclude: [
                 "Info.plist",
                 "Assets.xcassets",
+                "_PreviewHelpers/PreviewAssets.xcassets",
                 "bitchat.entitlements",
                 "bitchat.noappgroups.entitlements",
                 "bitchat-macOS.entitlements",
@@ -51,7 +54,10 @@ let package = Package(
         ),
         .testTarget(
             name: "bitchatTests",
-            dependencies: ["bitchat"],
+            dependencies: [
+                "bitchat",
+                .product(name: "BitFoundation", package: "BitFoundation")
+            ],
             path: "bitchatTests",
             exclude: [
                 "Info.plist",

@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import BitFoundation
 import BitLogger
 
 extension ChatViewModel {

@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import BitFoundation
 
 struct AgentSessionMessage: Codable, Equatable {
     let role: String

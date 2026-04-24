@@ -21,6 +21,7 @@ enum TransportConfig {
 
     // Timers
     static let networkResetGraceSeconds: TimeInterval = 600 // 10 minutes
+    static let networkNotificationCooldownSeconds: TimeInterval = 300 // 5 minutes
     static let basePublicFlushInterval: TimeInterval = 0.08  // ~12.5 fps batching
 
     // Agent request reliability
@@ -183,9 +184,6 @@ enum TransportConfig {
     // Nostr helpers
     static let nostrShortKeyDisplayLength: Int = 8
     static let nostrConvKeyPrefixLength: Int = 16
-
-    // Compression
-    static let compressionThresholdBytes: Int = 100
 
     // Message deduplication
     static let messageDedupMaxAgeSeconds: TimeInterval = 300

@@ -4,6 +4,7 @@
 //
 
 import XCTest
+@testable import BitFoundation
 @testable import bitchat
 
 @MainActor
@@ -20,6 +21,7 @@ private func makePaymentTestViewModel() -> (viewModel: ChatViewModel, transport:
         identityManager: identityManager,
         transport: transport
     )
+    viewModel.cashuMintAllowlistStore.setAllowed(["https://mint.example"])
     return (viewModel, transport)
 }
 

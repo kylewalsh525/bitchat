@@ -112,10 +112,9 @@ final class ThirdwebGuestWalletBridge: NSObject, ObservableObject, X402GuestWall
 
     func configuredClientID() -> String? {
         // Developer override (stored on-device). Users should not need to set this in normal builds.
-        if let override = defaults.string(forKey: Self.clientIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !override.isEmpty {
-            return override
+        if let rawOverride = defaults.object(forKey: Self.clientIDKey) as? String {
+            let override = rawOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            return override.isEmpty ? nil : override
         }
         // Dev convenience (Xcode scheme env var / local launch): allow runtime env override.
         if let env = environmentClientID() {

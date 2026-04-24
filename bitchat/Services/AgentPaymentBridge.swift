@@ -1,4 +1,5 @@
 import Foundation
+import BitFoundation
 #if canImport(Security)
 import Security
 #endif

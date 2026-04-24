@@ -1,4 +1,5 @@
 import XCTest
+@testable import BitFoundation
 @testable import bitchat
 
 @MainActor

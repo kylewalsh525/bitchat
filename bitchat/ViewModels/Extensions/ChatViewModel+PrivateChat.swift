@@ -8,6 +8,7 @@
 import Foundation
 import Combine
 import BitLogger
+import BitFoundation
 import SwiftUI
 
 extension ChatViewModel {
@@ -389,7 +390,7 @@ extension ChatViewModel {
         let threadPeer = routing?.threadPeer ?? selectedPrivateChatPeer
         let targetPeer = routing?.targetPeer ?? selectedPrivateChatPeer
         let contextID = routing?.contextID
-        let message = enqueueMediaMessage(content: "[voice] \(url.lastPathComponent)", targetPeer: threadPeer)
+        let message = enqueueMediaMessage(content: "\(MimeType.Category.audio.messagePrefix)\(url.lastPathComponent)", targetPeer: threadPeer)
         let messageID = message.id
         let transferId = makeTransferID(messageID: messageID)
 
@@ -435,6 +436,36 @@ extension ChatViewModel {
         }
     }
 
+    #if os(iOS)
+    func processThenSendImage(_ image: UIImage?) {
+        guard let image else { return }
+        Task.detached {
+            do {
+                let processedURL = try ImageUtils.processImage(image)
+                await MainActor.run {
+                    self.sendImage(from: processedURL)
+                }
+            } catch {
+                SecureLogger.error("Image processing failed: \(error)", category: .session)
+            }
+        }
+    }
+    #elseif os(macOS)
+    func processThenSendImage(from url: URL?) {
+        guard let url else { return }
+        Task.detached {
+            do {
+                let processedURL = try ImageUtils.processImage(at: url)
+                await MainActor.run {
+                    self.sendImage(from: processedURL)
+                }
+            } catch {
+                SecureLogger.error("Image processing failed: \(error)", category: .session)
+            }
+        }
+    }
+    #endif
+
     @MainActor
     func sendImage(from sourceURL: URL, cleanup: (() -> Void)? = nil) {
         guard canSendMediaInCurrentContext else {
@@ -443,8 +474,55 @@ extension ChatViewModel {
             addSystemMessage("Images are only available in mesh chats.")
             return
         }
-        queueDraftImage(url: sourceURL, for: selectedPrivateChatPeer)
-        cleanup?()
+        let routing = agentMediaRoutingContext()
+        let threadPeer = routing?.threadPeer ?? selectedPrivateChatPeer
+        let targetPeer = routing?.targetPeer ?? selectedPrivateChatPeer
+        let contextID = routing?.contextID
+
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
+            var processedURL: URL?
+            do {
+                let outputURL = try ImageUtils.processImage(at: sourceURL)
+                processedURL = outputURL
+                let data = try Data(contentsOf: outputURL)
+                guard data.count <= FileTransferLimits.maxImageBytes else {
+                    SecureLogger.warning("Processed image exceeds size limit (\(data.count) bytes)", category: .session)
+                    await MainActor.run {
+                        self.addSystemMessage("Image is too large to send.")
+                    }
+                    try? FileManager.default.removeItem(at: outputURL)
+                    return
+                }
+                let packet = BitchatFilePacket(
+                    fileName: outputURL.lastPathComponent,
+                    fileSize: UInt64(data.count),
+                    mimeType: "image/jpeg",
+                    contextID: contextID,
+                    content: data
+                )
+                guard packet.encode() != nil else { throw MediaSendError.encodingFailed }
+                await MainActor.run {
+                    let message = self.enqueueMediaMessage(content: "\(MimeType.Category.image.messagePrefix)\(outputURL.lastPathComponent)", targetPeer: threadPeer)
+                    let messageID = message.id
+                    let transferId = self.makeTransferID(messageID: messageID)
+                    self.registerTransfer(transferId: transferId, messageID: messageID)
+                    if let peerID = targetPeer {
+                        self.meshService.sendFilePrivate(packet, to: peerID, transferId: transferId)
+                    } else {
+                        self.meshService.sendFileBroadcast(packet, transferId: transferId)
+                    }
+                }
+            } catch {
+                SecureLogger.error("Image send preparation failed: \(error)", category: .session)
+                await MainActor.run {
+                    self.addSystemMessage("Failed to prepare image for sending.")
+                }
+                if let url = processedURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+        }
     }
 
     @MainActor
@@ -550,20 +628,19 @@ extension ChatViewModel {
 
     func cleanupLocalFile(forMessage message: BitchatMessage) {
         // Check both outgoing and incoming directories for thorough cleanup
-        let prefixes = ["[voice] ", "[image] ", "[file] "]
-        let subdirs = ["voicenotes/outgoing", "voicenotes/incoming",
-                       "images/outgoing", "images/incoming",
-                       "files/outgoing", "files/incoming"]
-
-        guard let prefix = prefixes.first(where: { message.content.hasPrefix($0) }) else { return }
-        let rawFilename = String(message.content.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawFilename.isEmpty, let base = try? applicationFilesDirectory() else { return }
-
-        // Security: Extract only the last path component to prevent directory traversal
-        let safeFilename = (rawFilename as NSString).lastPathComponent
-        guard !safeFilename.isEmpty && safeFilename != "." && safeFilename != ".." else { return }
+        let categories: [MimeType.Category] = [.audio, .image, .file]
+        guard let category = categories.first(where: { message.content.hasPrefix($0.messagePrefix) }),
+              let rawFilename = String(message.content.dropFirst(category.messagePrefix.count)).trimmedOrNilIfEmpty,
+              let base = try? applicationFilesDirectory(),
+              // Security: Extract only the last path component to prevent directory traversal
+              let safeFilename = (rawFilename as NSString).lastPathComponent.nilIfEmpty,
+              safeFilename != "." && safeFilename != ".."
+        else {
+            return
+        }
 
         // Try all possible locations (outgoing and incoming)
+        let subdirs = categories.flatMap { ["\($0.mediaDir)/outgoing", "\($0.mediaDir)/incoming"] }
         for subdir in subdirs {
             let target = base.appendingPathComponent(subdir, isDirectory: true).appendingPathComponent(safeFilename)
 

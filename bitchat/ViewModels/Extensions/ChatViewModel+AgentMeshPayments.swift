@@ -1,4 +1,5 @@
 import Foundation
+import BitFoundation
 
 extension ChatViewModel {
     @MainActor

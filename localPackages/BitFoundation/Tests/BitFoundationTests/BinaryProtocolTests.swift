@@ -8,7 +8,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import BitFoundation
 
 struct BinaryProtocolTests {
     
@@ -30,6 +30,11 @@ struct BinaryProtocolTests {
         let originalSenderID = originalPacket.senderID.prefix(BinaryProtocol.senderIDSize)
         let decodedSenderID = decodedPacket.senderID.trimmingNullBytes()
         #expect(decodedSenderID == originalSenderID)
+    }
+
+    @Test func trimmingNullBytesReturnsOriginalDataWhenNoNullsPresent() {
+        let raw = Data([0x41, 0x42, 0x43])
+        #expect(raw.trimmingNullBytes() == raw)
     }
     
     @Test func packetWithRecipient() throws {
@@ -314,6 +319,34 @@ struct BinaryProtocolTests {
         let encodedData = try #require(BinaryProtocol.encode(packet), "Failed to encode small packet")
         let decodedPacket = try #require(BinaryProtocol.decode(encodedData), "Failed to decode small packet")
         #expect(decodedPacket.payload == smallPayload)
+    }
+
+    @Test("Reject payloads larger than the framed file cap")
+    func oversizedPayloadIsRejected() throws {
+        let targetSize = FileTransferLimits.maxFramedFileBytes + 1
+        var oversized = Data()
+        oversized.reserveCapacity(targetSize)
+        let byteRun = Data((0...255).map { UInt8($0) })
+        while oversized.count < targetSize {
+            let remaining = targetSize - oversized.count
+            if remaining >= byteRun.count {
+                oversized.append(byteRun)
+            } else {
+                oversized.append(byteRun.prefix(remaining))
+            }
+        }
+        let packet = BitchatPacket(
+            type: MessageType.message.rawValue,
+            senderID: Data(hexString: "0011223344556677") ?? Data(),
+            recipientID: nil,
+            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
+            payload: oversized,
+            signature: nil,
+            ttl: 1,
+            version: 2
+        )
+        let encoded = try #require(BinaryProtocol.encode(packet), "Failed to encode oversized packet")
+        #expect(BinaryProtocol.decode(encoded) == nil)
     }
     
     // MARK: - Message Padding Tests
@@ -655,6 +688,33 @@ struct BinaryProtocolTests {
         let result = BinaryProtocol.decode(malformedData)
         #expect(result == nil, "Compressed packet with invalid original size should return nil, not crash")
     }
+
+    @Test("Test compressed packet with suspicious compression ratio")
+    func compressedPacketWithSuspiciousCompressionRatio() {
+        var malformedData = Data()
+
+        malformedData.append(1)     // version
+        malformedData.append(1)     // type
+        malformedData.append(10)    // ttl
+
+        for _ in 0..<8 {
+            malformedData.append(0)
+        }
+
+        malformedData.append(0x04)  // isCompressed
+        malformedData.append(0x00)
+        malformedData.append(0x03)  // payloadLength = 3 (2 original-size bytes + 1 compressed byte)
+
+        for _ in 0..<8 {
+            malformedData.append(0x01)
+        }
+
+        malformedData.append(0xFF)
+        malformedData.append(0xFF)  // originalSize = 65535
+        malformedData.append(0x99)  // compressed payload length = 1 => ratio > 50_000
+
+        #expect(BinaryProtocol.decode(malformedData) == nil)
+    }
     
     @Test("Test packet designed to cause integer overflow")
     func maliciousPacketWithIntegerOverflow() throws {
@@ -743,5 +803,15 @@ struct BinaryProtocolTests {
         _ = BinaryProtocol.decode(minData)
         // The important thing is no crash occurs - result might be nil or valid
         // We don't assert the result, just that no crash happens
+    }
+}
+
+private extension Data {
+    func trimmingNullBytes() -> Data {
+        // Find the first null byte
+        if let nullIndex = self.firstIndex(of: 0) {
+            return self.prefix(nullIndex)
+        }
+        return self
     }
 }

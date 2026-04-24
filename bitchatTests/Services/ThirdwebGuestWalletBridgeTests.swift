@@ -97,6 +97,7 @@ final class ThirdwebGuestWalletBridgeTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         let runtime = MockThirdwebBridgeRuntime()
         runtime.responses["ensureGuestWallet"] = "0xabc"
+        defaults.set("", forKey: ThirdwebGuestWalletBridge.clientIDKey)
         let bridge = ThirdwebGuestWalletBridge(defaults: defaults, runtime: runtime)
 
         do {

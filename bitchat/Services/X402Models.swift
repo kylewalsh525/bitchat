@@ -80,6 +80,7 @@ struct X402PaymentRequestEnvelope: Codable, Equatable {
         guard let gatewayData = gatewayURL.data(using: .utf8), !gatewayData.isEmpty else { return nil }
 
         var pairs: [String] = []
+        pairs.append("v=\(version)")
         pairs.append("p=\(paymentID)")
         pairs.append("r=\(requestID)")
         pairs.append("a=\(amount)")
@@ -90,6 +91,10 @@ struct X402PaymentRequestEnvelope: Codable, Equatable {
         pairs.append("g=\(gatewayData.base64URLEncodedString())")
         pairs.append("e=\(expiresAtMs)")
         pairs.append("h=\(scheme == .exact ? "e" : "e")")
+        if let sessionID, !sessionID.isEmpty,
+           let sessionData = sessionID.data(using: .utf8) {
+            pairs.append("q=\(sessionData.base64URLEncodedString())")
+        }
         if let facilitatorID, !facilitatorID.isEmpty {
             pairs.append("f=\(facilitatorID)")
         }
@@ -130,7 +135,7 @@ struct X402PaymentRequestEnvelope: Codable, Equatable {
         }
 
         return X402PaymentRequestEnvelope(
-            version: 2,
+            version: map["v"].flatMap(Int.init) ?? 2,
             paymentID: paymentID,
             requestID: requestID,
             amount: amount,

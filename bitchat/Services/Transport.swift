@@ -1,3 +1,4 @@
+import BitFoundation
 import Foundation
 import Combine
 
@@ -10,6 +11,22 @@ struct TransportPeerSnapshot: Equatable, Hashable {
     let noisePublicKey: Data?
     let lastSeen: Date
     let agentInfo: AgentInfo?
+
+    init(
+        peerID: PeerID,
+        nickname: String,
+        isConnected: Bool,
+        noisePublicKey: Data?,
+        lastSeen: Date,
+        agentInfo: AgentInfo? = nil
+    ) {
+        self.peerID = peerID
+        self.nickname = nickname
+        self.isConnected = isConnected
+        self.noisePublicKey = noisePublicKey
+        self.lastSeen = lastSeen
+        self.agentInfo = agentInfo
+    }
 }
 
 protocol Transport: AnyObject {
