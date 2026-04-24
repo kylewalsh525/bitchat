@@ -1,4 +1,5 @@
 import Foundation
+import BitFoundation
 
 enum MintGatewayProxyError: LocalizedError {
     case unavailable

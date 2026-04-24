@@ -140,6 +140,7 @@ struct CashuPaymentRequestEnvelope: Codable, Equatable {
         guard let mintData = mintURL.data(using: .utf8), !mintData.isEmpty else { return nil }
 
         var pairs: [String] = []
+        pairs.append("v=\(version)")
         pairs.append("p=\(paymentID)")
         pairs.append("r=\(requestID)")
         pairs.append("m=\(mintData.base64URLEncodedString())")
@@ -149,6 +150,10 @@ struct CashuPaymentRequestEnvelope: Codable, Equatable {
         pairs.append("s=\(settlementMode == .offlineAccepted ? "f" : "o")")
         pairs.append("l=\((requiresLocking ?? .none) == .p2pk ? "p" : "n")")
 
+        if let sessionID, !sessionID.isEmpty,
+           let sessionData = sessionID.data(using: .utf8) {
+            pairs.append("q=\(sessionData.base64URLEncodedString())")
+        }
         if let lockPubkey, !lockPubkey.isEmpty {
             pairs.append("k=\(lockPubkey)")
         }
@@ -204,7 +209,7 @@ struct CashuPaymentRequestEnvelope: Codable, Equatable {
         case "p":
             requiresLocking = .p2pk
         default:
-            requiresLocking = .none
+            requiresLocking = Optional<AgentPaymentLockingMode>.none
         }
 
         let pricingModel: AgentPaymentPriceModel?
@@ -228,7 +233,7 @@ struct CashuPaymentRequestEnvelope: Codable, Equatable {
         }
 
         return CashuPaymentRequestEnvelope(
-            version: 2,
+            version: map["v"].flatMap(Int.init) ?? 2,
             paymentID: paymentID,
             requestID: requestID,
             mintURL: mintURL,

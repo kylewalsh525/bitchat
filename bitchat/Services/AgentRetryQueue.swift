@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import BitFoundation
 
 final class AgentRetryQueue {
     private struct Entry {

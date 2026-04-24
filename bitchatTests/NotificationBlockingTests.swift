@@ -9,6 +9,7 @@
 
 import Testing
 import Foundation
+@testable import BitFoundation
 @testable import bitchat
 
 struct NotificationBlockingTests {

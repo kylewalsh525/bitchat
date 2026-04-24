@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import BitFoundation
 
 struct AgentRuntimeAttachment {
     let data: Data

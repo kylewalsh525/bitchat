@@ -9,6 +9,20 @@ struct AnnouncementPacket {
     let directNeighbors: [Data]?        // 8-byte peer IDs
     let agentInfo: AgentInfo?           // Optional agent capability info
 
+    init(
+        nickname: String,
+        noisePublicKey: Data,
+        signingPublicKey: Data,
+        directNeighbors: [Data]?,
+        agentInfo: AgentInfo? = nil
+    ) {
+        self.nickname = nickname
+        self.noisePublicKey = noisePublicKey
+        self.signingPublicKey = signingPublicKey
+        self.directNeighbors = directNeighbors
+        self.agentInfo = agentInfo
+    }
+
     private enum TLVType: UInt8 {
         case nickname = 0x01
         case noisePublicKey = 0x02

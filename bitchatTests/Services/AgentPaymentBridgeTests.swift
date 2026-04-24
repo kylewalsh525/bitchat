@@ -4,6 +4,7 @@
 //
 
 import XCTest
+@testable import BitFoundation
 @testable import bitchat
 
 private final class AgentPaymentBridgeMintURLProtocolStub: URLProtocol {

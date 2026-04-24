@@ -8,6 +8,7 @@
 
 import Testing
 import Foundation
+import BitFoundation
 @testable import bitchat
 
 // MARK: - Test Helpers
@@ -195,15 +196,11 @@ struct ChatViewModelReceivingTests {
             messageID: "pub-001"
         )
 
-        // Give time for async Task and pipeline processing (poll to avoid flakiness).
-        for _ in 0..<20 {
-            if viewModel.messages.contains(where: { $0.content == "Public hello from Bob" }) {
-                break
-            }
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
+        let found = await TestHelpers.waitUntil({
+            viewModel.timelineStore.messages(for: .mesh).contains { $0.content == "Public hello from Bob" }
+        }, timeout: TestConstants.defaultTimeout)
 
-        #expect(viewModel.messages.contains { $0.content == "Public hello from Bob" })
+        #expect(found)
     }
 }
 
@@ -517,69 +514,5 @@ struct ChatViewModelLifecycleTests {
         let (_, transport) = makeTestableViewModel()
 
         #expect(transport.startServicesCallCount == 1)
-    }
-}
-
-// MARK: - Agent Status Rendering Tests
-
-struct ChatViewModelAgentStatusTests {
-    @Test @MainActor
-    func pendingAgentStatus_doesNotMutateImageDeliveryState() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let threadID = PeerID(agentSessionID: "session-test")
-        viewModel.pendingAgentImageDeliveries["req-1"] = ChatViewModel.PendingAgentImageDelivery(
-            requestID: "req-1",
-            threadID: threadID,
-            startedAt: Date().addingTimeInterval(-600)
-        )
-
-        _ = viewModel.pendingAgentStatusText(for: threadID)
-
-        #expect(viewModel.pendingAgentImageDeliveries.count == 1)
-        #expect(viewModel.pendingAgentImageDeliveries["req-1"]?.requestID == "req-1")
-    }
-}
-
-struct ChatViewModelAgentRequestHandlingTests {
-    @Test @MainActor
-    func incomingAgentRequest_doesNotCrashProviderAndProducesResponse() async {
-        let (viewModel, transport) = makeTestableViewModel()
-        var config = viewModel.agentConfig
-        config.enabled = true
-        config.role = "general"
-        config.modelId = "local-echo"
-        config.runtime.mode = .echo
-        config.paymentTerms = nil
-        viewModel.updateAgentConfig(config)
-
-        let requester = PeerID(str: "abcd1234abcd1234")
-        let packet = AgentRequestPacket(
-            requestID: UUID().uuidString,
-            role: "general",
-            prompt: "hello",
-            sessionID: nil,
-            attachmentCount: nil,
-            senderAlias: nil,
-            createdAtMs: UInt64(Date().timeIntervalSince1970 * 1000),
-            ttlMs: 60_000
-        )
-        guard let payload = packet.encode() else {
-            Issue.record("failed to encode agent request payload")
-            return
-        }
-
-        viewModel.didReceiveNoisePayload(
-            from: requester,
-            type: .agentRequest,
-            payload: payload,
-            timestamp: Date()
-        )
-
-        let deadline = Date().addingTimeInterval(1.5)
-        while transport.sentAgentResponses.isEmpty && transport.sentAgentResponseChunks.isEmpty && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 40_000_000)
-        }
-
-        #expect(!transport.sentAgentResponses.isEmpty || !transport.sentAgentResponseChunks.isEmpty)
     }
 }

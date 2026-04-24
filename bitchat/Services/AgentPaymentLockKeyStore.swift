@@ -1,4 +1,5 @@
 import Foundation
+import BitFoundation
 import P256K
 import Security
 
