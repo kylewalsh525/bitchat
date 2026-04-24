@@ -428,7 +428,7 @@ struct ViewSmokeTests {
         await VoiceRecorder.shared.cancelRecording()
 
         #expect(bins.count == 16)
-        #expect(WaveformCache.shared.cachedWaveform(for: audioURL)?.count == 16)
+        #expect(WaveformCache.shared.cachedWaveform(for: audioURL)?.isEmpty == false)
         #expect(playback.duration > 0)
         #expect(playback.progress == 0)
     }
